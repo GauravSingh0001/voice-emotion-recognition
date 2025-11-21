@@ -7,8 +7,31 @@ import pandas as pd
 import tempfile
 import os
 from datetime import datetime
+import gdown
 
 st.set_page_config(page_title="Batch Processing", page_icon="📁", layout="wide")
+
+@st.cache_resource
+def download_model_if_needed():
+    """Download model from Google Drive if not present"""
+    model_path = 'models/saved_models/best_model_multilingual.pth'
+    
+    if not os.path.exists(model_path):
+        st.info("🔄 Downloading model for the first time (30 seconds)...")
+        os.makedirs('models/saved_models', exist_ok=True)
+        
+        file_id = "1eolxoEXnUDVc336RLnxotCuwy5maJYqj"
+        url = f"https://drive.google.com/uc?id={file_id}"
+        
+        try:
+            gdown.download(url, model_path, quiet=False)
+            st.success("✅ Model downloaded successfully!")
+        except Exception as e:
+            st.error(f"❌ Error downloading model: {e}")
+            st.info("Please check the file ID and ensure the file is publicly accessible.")
+            st.stop()
+    
+    return model_path
 
 # Same model class
 class CNNLSTM(nn.Module):
@@ -43,8 +66,12 @@ EMOTIONS = ['Neutral', 'Calm', 'Happy', 'Sad', 'Angry', 'Fearful', 'Disgust', 'S
 
 @st.cache_resource
 def load_model():
+    # Download model if needed (THIS IS THE CRITICAL CHANGE!)
+    model_path = download_model_if_needed()
+    
+    # Load model
     model = CNNLSTM()
-    model.load_state_dict(torch.load('models/saved_models/best_model.pth', map_location='cpu'))
+    model.load_state_dict(torch.load(model_path, map_location='cpu'))
     model.eval()
     return model
 

@@ -9,6 +9,13 @@ import os
 import gdown
 from audio_recorder_streamlit import audio_recorder
 
+st.set_page_config(
+    page_title="Voice Emotion Recognition",
+    page_icon="🎤",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 @st.cache_resource
 def download_model_if_needed():
     """Download model from Google Drive if not present"""
@@ -22,7 +29,7 @@ def download_model_if_needed():
         os.makedirs('models/saved_models', exist_ok=True)
         
         # Your Google Drive file ID
-        file_id = "1eolxoEXnUDVc336RLnxotCuwy5maJYqj"  # ← REPLACE THIS!
+        file_id = "1eolxoEXnUDVc336RLnxotCuwy5maJYqj"
         
         # Download URL
         url = f"https://drive.google.com/uc?id={file_id}"
@@ -38,14 +45,7 @@ def download_model_if_needed():
     
     return model_path
 
-st.set_page_config(
-    page_title="Voice Emotion Recognition",
-    page_icon="🎤",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Model architecture (keep same as before)
+# Model architecture
 class CNNLSTM(nn.Module):
     def __init__(self, input_dim=39, num_classes=8, hidden_dim=256, num_layers=2, dropout=0.3):
         super(CNNLSTM, self).__init__()
@@ -83,8 +83,13 @@ EMOTION_COLORS = {
 
 @st.cache_resource
 def load_model():
+    """Load the trained model"""
+    # Download model if needed (THIS IS THE FIX!)
+    model_path = download_model_if_needed()
+    
+    # Load model
     model = CNNLSTM()
-    model.load_state_dict(torch.load('models/saved_models/best_model_multilingual.pth', map_location='cpu'))
+    model.load_state_dict(torch.load(model_path, map_location='cpu'))
     model.eval()
     return model
 
@@ -167,7 +172,6 @@ def main():
     st.title("🎤 Voice Emotion Recognition System")
     st.markdown("### AI-Powered Emotion Detection from Voice")
     
-    # Add navigation hint
     st.info("👈 **Use the sidebar** to navigate between pages:\n- 🏠 Home (Record/Upload)\n- 📁 Batch Processing\n- 📊 Analytics Dashboard")
     
     st.markdown("---")
@@ -176,7 +180,7 @@ def main():
         st.header("About")
         st.info(
             "CNN-LSTM deep learning model trained on RAVDESS dataset "
-            "with **88.19% accuracy**."
+            "with **81.15% accuracy**."
         )
         
         st.header("Supported Emotions")

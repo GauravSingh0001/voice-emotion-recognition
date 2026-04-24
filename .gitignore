@@ -1,0 +1,41 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+recordings/
+
+# Node
+node_modules/
+dist/
+.next/
+
+# Large Files & Models
+*.onnx
+*.bin
+*.mp4
+*.wav
+*.zip
+*.crdownload
+New folder/
+models/sensevoice_small.onnx
+
+# Reference & Report Files
+architecture.txt
+deepseek_html_*.html
+frontend_plan.txt
+project structure.txt
+prompt.txt
+result_page.html
+test_run_report.md
+n.wav
+.DS_Store
+Thumbs.db

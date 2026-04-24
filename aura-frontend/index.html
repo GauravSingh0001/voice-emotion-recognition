@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<!--
+  ╔══════════════════════════════════════════════════════════════╗
+  ║  Aura · Emotion Intelligence · index.html                    ║
+  ║  Environment variable injection (build-time replacement):    ║
+  ║                                                              ║
+  ║  Replace these placeholders before deploying:                ║
+  ║    http://localhost:8000     → https://your-backend.railway.app    ║
+  ║        → https://xxxx.supabase.co            ║
+  ║    __SUPABASE_ANON__   → eyJhbGci...                         ║
+  ║                                                              ║
+  ║  Sample Node.js injection script (run before deploy):        ║
+  ║  ──────────────────────────────────────────────────────────  ║
+  ║  const fs = require('fs');                                   ║
+  ║  let html = fs.readFileSync('index.html','utf8');            ║
+  ║  html = html.replace(/http://localhost:8000/g, process.env.BACKEND_URL)   ║
+  ║             .replace(//g, process.env.SUPABASE_URL) ║
+  ║             .replace(/__SUPABASE_ANON__/g, process.env.SUPABASE_ANON_KEY); ║
+  ║  fs.writeFileSync('dist/index.html', html);                  ║
+  ╚══════════════════════════════════════════════════════════════╝
+-->
+<html lang="en">
+<head>
+  <meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src  'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com;
+  style-src   'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net;
+  font-src    'self' https://fonts.gstatic.com;
+  connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.livekit.cloud wss://*.livekit.cloud http://localhost:8000 ws://localhost:8000 https://cdn.jsdelivr.net;
+  img-src     'self' data:;
+  worker-src  'self';
+">
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+  <meta name="description" content="Aura – Real-time emotion intelligence visualizer powered by Groq + Supabase."/>
+  <meta name="theme-color" content="#0B0E14"/>
+
+  <title>Aura · Emotion Intelligence</title>
+  <!-- PWA manifest (#16) -->
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css"/>
+
+  <!-- =========================================================
+       ENV INJECTION — update these before deploying to production
+       BACKEND_URL  → your Railway / Render / VPS backend URL
+       SUPABASE_*   → from app.supabase.com → Project Settings → API
+       ========================================================= -->
+  <script>
+    window.ENV_BACKEND_URL       = 'http://localhost:8000';
+    window.ENV_SUPABASE_URL      = 'https://vllamwlfahwsmraudkzj.supabase.co';
+    window.ENV_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGFtd2xmYWh3c21yYXVka3pqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNDgwMzQsImV4cCI6MjA5MTkyNDAzNH0.pGWcESO0teYhH6DJAWLQxldmnyYO6FkDef7UlDGC4as';
+
+    // ⚠️ DEPLOYMENT VALIDATION: Warn if build-time injection was skipped
+    if (window.ENV_BACKEND_URL === 'http://localhost:8000' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      console.warn('⚠️ BUILD INJECTION SKIPPED: ENV_BACKEND_URL is localhost but origin is remote. Ensure scripts/inject-env.js runs before deploy.');
+    }
+  </script>
+
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <!-- LiveKit Client SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+
+  <!-- #2: Unified emotion palette (load FIRST — before particle-aura and main.js) -->
+  <script src="emotion-config.js"></script>
+  <!-- LiveKit connection helper -->
+  <script src="livekit.js"></script>
+
+  <!-- Three.js importmap -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <!-- Particle-aura helper (uses window.EMOTION_PALETTE) -->
+  <script src="particle-aura.js"></script>
+</head>
+<body>
+
+<!-- Layer 0: Three.js particle orb -->
+<div id="particle-canvas-wrap" aria-hidden="true"></div>
+
+<!-- Legacy 2D canvas (hidden — satisfies main.js getElementById) -->
+<canvas id="aura-canvas" style="display:none" aria-hidden="true"></canvas>
+
+<!-- Layer 2: Progress ring (#7 — stroke-width 4, countdown label) -->
+<div id="ring-wrap" aria-label="Analyzing speech" aria-live="polite">
+  <svg id="progress-ring" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <!-- Inner glow circle -->
+    <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="8"/>
+    <!-- Track -->
+    <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="4"/>
+    <!-- Arc -->
+    <circle id="ring-arc" cx="50" cy="50" r="42" fill="none"
+            stroke="rgba(255,255,255,0.88)" stroke-width="4"
+            stroke-linecap="round"
+            stroke-dasharray="263.89" stroke-dashoffset="263.89"
+            transform="rotate(-90 50 50)"/>
+  </svg>
+  <span id="ring-label">Analyzing…</span>
+  <!-- Countdown timer (#7) -->
+  <span id="ring-countdown"></span>
+</div>
+
+<!-- Layer 3: Status bar -->
+<div id="status-bar" role="status" title="Click to reconnect">
+  <span id="conn-dot" class="dot dot--off"></span>
+  <span id="conn-text">Disconnected</span>
+  <!-- Toggle pill switch — mirrors connection state -->
+  <div id="conn-toggle" aria-label="Connection toggle"></div>
+</div>
+
+<!-- Layer 4: Listening indicator -->
+<div id="listening" hidden aria-live="polite" style="position:relative; padding-bottom:4px;">
+  <span class="listen-dot"></span>
+  <span>Listening…</span>
+  <div style="position:absolute; bottom:0; left:0; height:2px; background:var(--c-ok); width:0%; transition: width 0.1s linear;" id="silence-bar"></div>
+</div>
+
+<!-- Session controls: Pause/Resume + Cancel (always in DOM, CSS-driven visibility) -->
+<div id="session-controls" role="toolbar" aria-label="Session controls">
+  <button id="btn-pause" type="button" class="session-btn" aria-pressed="false" aria-label="Pause session">
+    <span class="btn-icon" id="pause-icon">⏸</span>
+    <span id="pause-label">Pause</span>
+  </button>
+  <button id="btn-done" type="button" class="session-btn" aria-label="Finish utterance">
+    <span class="btn-icon">✓</span>
+    <span id="done-label">Done</span>
+  </button>
+  <button id="btn-cancel" type="button" class="session-btn" aria-label="Cancel session">
+    <span class="btn-icon">✕</span>
+    <span id="cancel-label">Cancel</span>
+  </button>
+</div>
+
+<!-- Layer 5: Cards -->
+<div id="cards" role="region" aria-label="Emotion results" aria-live="polite"></div>
+
+<!-- Layer 6: Toast -->
+<div id="toast" role="alert" hidden></div>
+
+<!-- Layer 7: Onboarding -->
+<div id="onboarding" role="dialog" aria-modal="true">
+  <div id="ob-card">
+    <div id="ob-logo" aria-hidden="true">
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <defs>
+          <radialGradient id="g1" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fff" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#A0AAB5" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle cx="20" cy="20" r="18" fill="url(#g1)"/>
+        <circle cx="20" cy="20" r="8" fill="#A0AAB5" opacity="0.7"/>
+      </svg>
+    </div>
+    <h1>Aura</h1>
+    <p class="ob-sub">Real-time Emotion Intelligence</p>
+    <p class="ob-desc">Speak naturally — the particle orb reacts to your voice and detected emotion.</p>
+    <ul id="legend" aria-label="Emotion color guide">
+      <li><span class="ld" style="background:#A0AAB5;box-shadow:0 0 8px #A0AAB5"></span><strong>Neutral</strong> — slow drift</li>
+      <li><span class="ld" style="background:#FFD166;box-shadow:0 0 8px #FFD166"></span><strong>Happy</strong> — golden burst</li>
+      <li><span class="ld" style="background:#4A6FA5;box-shadow:0 0 8px #4A6FA5"></span><strong>Sad</strong> — cool blue fade</li>
+      <li><span class="ld" style="background:#EF476F;box-shadow:0 0 8px #EF476F"></span><strong>Frustrated</strong> — crimson flare</li>
+      <li><span class="ld" style="background:#06D6A0;box-shadow:0 0 8px #06D6A0"></span><strong>Surprised</strong> — teal expansion</li>
+      <li><span class="ld" style="background:#9D4EDD;box-shadow:0 0 8px #9D4EDD"></span><strong>Sarcastic</strong> — violet shimmer</li>
+    </ul>
+    <button id="ob-btn" type="button">Start Listening</button>
+    <div style="text-align: center; margin-bottom: 14px; font-family: var(--font-mono); font-size: 0.65rem; color: rgba(255,255,255,0.35); text-transform: uppercase;">— or —</div>
+    <input type="file" id="ob-file-input" accept=".wav,.mp3,.m4a,.ogg,.flac" style="display:none;" />
+    <button id="ob-upload-btn" type="button" style="width:100%;padding:14px;background:rgba(255,255,255,0.05);border:2px dashed rgba(255,255,255,0.3);border-radius:0;color:#fff;font-family:var(--font-mono);font-size:.82rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;transition:.1s ease;">
+      <span class="btn-icon">📁</span> Upload Audio File
+    </button>
+  </div>
+</div>
+
+<!-- Mic test overlay (#8) — shown after clicking Start Listening -->
+<div id="mic-test-overlay" hidden role="dialog" aria-modal="true" aria-label="Microphone test">
+  <div id="mic-test-card">
+    <h2>🎤 Testing Microphone</h2>
+    <p id="mic-test-status">Requesting access…</p>
+    <div id="mic-vol-bar-wrap" aria-label="Volume level">
+      <div id="mic-vol-bar"></div>
+    </div>
+    <p style="font-size:.75rem;color:rgba(255,255,255,.35);text-align:center;">Speak to test — will proceed automatically</p>
+    <button id="mic-test-skip" type="button">Skip Test →</button>
+  </div>
+</div>
+
+<!-- Watermark -->
+<div id="watermark" aria-hidden="true">⚡ GROQ · SUPABASE · <a href="result.html" style="color:inherit;text-decoration:underline;opacity:.7">VIEW REPORT →</a></div>
+
+<!-- Main application script -->
+<script src="main.js"></script>
+
+<!-- Bootstrap module: wires Three.js addons, mic volume, page-flow, and mic test (#8) -->
+<script type="module">
+  import * as THREE from 'three';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+  window.ParticleAura._init(THREE, EffectComposer, RenderPass, UnrealBloomPass);
+
+  // ── Page-flow state management ────────────────────────────────────────────
+  const onboardingEl    = document.getElementById('onboarding');
+  const micTestOverlay  = document.getElementById('mic-test-overlay');
+  const micTestStatus   = document.getElementById('mic-test-status');
+  const micVolBar       = document.getElementById('mic-vol-bar');
+  const micTestSkipBtn  = document.getElementById('mic-test-skip');
+  const obBtn           = document.getElementById('ob-btn');
+
+  // Final reveal: hide all overlays, show orb
+  function _doEnterListeningState() {
+    if (onboardingEl) {
+      onboardingEl.style.opacity = '0';
+      onboardingEl.style.pointerEvents = 'none';
+      setTimeout(() => { onboardingEl.style.display = 'none'; }, 650);
+    }
+    if (micTestOverlay) micTestOverlay.hidden = true;
+    document.body.classList.remove('state-hero', 'state-results');
+    document.body.classList.add('state-listening');
+  }
+  window._auraEnterListeningState = _doEnterListeningState;
+
+  // ── File Upload Flow bindings ──────────────────────────────────────────────
+  const obUploadBtn = document.getElementById('ob-upload-btn');
+  const obFileInput = document.getElementById('ob-file-input');
+
+  if (obUploadBtn && obFileInput) {
+    obUploadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      obFileInput.click();
+    });
+    obFileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files[0]) {
+        if (typeof window._auraHandleFileUpload === 'function') {
+          window._auraHandleFileUpload(e.target.files[0]);
+        }
+      }
+      // Reset input so the same file can be selected again
+      e.target.value = '';
+    });
+  }
+
+  // ── Mic test step (#8) ─────────────────────────────────────────────────────
+  let _micTestStream = null;
+  let _micTestCtx    = null;
+  let _micTestRaf    = null;
+  let _volAboveTimer = 0;
+  const VOL_THRESHOLD = 0.08;  // min average volume to count
+  const VOL_HOLD_MS   = 1000;  // hold above threshold for 1s to auto-proceed
+  const MIC_TIMEOUT_MS= 5000;  // give up after 5s silence
+
+  async function showMicTest() {
+    if (onboardingEl) {
+      onboardingEl.style.transition = 'opacity 0.3s ease';
+      onboardingEl.style.opacity = '0';
+      onboardingEl.style.pointerEvents = 'none';
+      setTimeout(() => { onboardingEl.style.display = 'none'; }, 320);
+    }
+    micTestOverlay.hidden = false;
+
+    try {
+      _micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micTestStatus.textContent = 'Speak to test…';
+
+      _micTestCtx  = new (window.AudioContext || window.webkitAudioContext)();
+      const src    = _micTestCtx.createMediaStreamSource(_micTestStream);
+      const analyser = _micTestCtx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      const data   = new Uint8Array(analyser.frequencyBinCount);
+
+      const started = Date.now();
+      let holdStart = null;
+
+      function tick() {
+        _micTestRaf = requestAnimationFrame(tick);
+        analyser.getByteFrequencyData(data);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length / 128;
+        micVolBar.style.width = Math.min(avg * 100, 100) + '%';
+
+        // Feed volume to particle orb during test
+        if (window.ParticleAura) window.ParticleAura.setVolume(avg);
+
+        if (avg >= VOL_THRESHOLD) {
+          holdStart = holdStart || Date.now();
+          if (Date.now() - holdStart >= VOL_HOLD_MS) {
+            _finishMicTest();
+            return;
+          }
+          micTestStatus.textContent = 'Good — hold…';
+        } else {
+          holdStart = null;
+          micTestStatus.textContent = 'Speak to test…';
+        }
+
+        // 5s no-sound timeout
+        if (Date.now() - started >= MIC_TIMEOUT_MS) {
+          micTestStatus.textContent = '⚠ No sound detected.';
+          micVolBar.style.background = 'var(--c-frustrated)';
+          if (micTestSkipBtn) micTestSkipBtn.textContent = 'Continue Anyway →';
+          cancelAnimationFrame(_micTestRaf);
+        }
+      }
+      tick();
+
+    } catch (err) {
+      console.warn('[bootstrap] Mic access failed:', err.name, '— will auto-continue in 1.5s.');
+      if (micTestStatus) micTestStatus.textContent = '⚠ Mic access denied. Using demo mode.';
+      if (micTestSkipBtn) micTestSkipBtn.textContent = 'Continue →';
+      // CRITICAL: always finish the mic test — never leave user stuck
+      setTimeout(() => _finishMicTest(), 1500);
+    }
+  }
+
+  function _finishMicTest() {
+    cancelAnimationFrame(_micTestRaf);
+    // Store stream so connectToLiveKit can reuse it (no second getUserMedia)
+    if (_micTestStream) window._auraMicStream = _micTestStream;
+    // Feed to particle volume analyser
+    if (_micTestStream && typeof window._auraSetMicStream === 'function') {
+      window._auraSetMicStream(_micTestStream);
+    }
+    _doEnterListeningState();
+    // Poll until main.js has finished boot() and exposed _auraStartCapture
+    // This handles race conditions on slow loads.
+    _waitAndStartCapture();
+  }
+
+  /**
+   * Polls for window._auraStartCapture to be defined (set by main.js).
+   * Calls it once available.
+   */
+  let _waitAttempts = 0;
+  function _waitAndStartCapture() {
+    if (typeof window._auraStartCapture === 'function') {
+      window._auraStartCapture();
+    } else {
+      _waitAttempts++;
+      if (_waitAttempts > 62) { // 62 * 80ms ~ 5 seconds
+        if (window._aura && window._aura.showToast) {
+          window._aura.showToast('Application failed to initialize. Please refresh the page.', 10000);
+        } else {
+          const toast = document.getElementById('toast');
+          if (toast) {
+            toast.textContent = 'Application failed to initialize. Please refresh the page.';
+            toast.hidden = false;
+            requestAnimationFrame(() => toast.classList.add('show'));
+          }
+        }
+        return;
+      }
+      setTimeout(_waitAndStartCapture, 80);
+    }
+  }
+
+  // Skip button — proceed without waiting for volume threshold
+  if (micTestSkipBtn) {
+    micTestSkipBtn.addEventListener('click', () => {
+      cancelAnimationFrame(_micTestRaf);
+      // If stream was not acquired (mic denied), ensure _auraMicStream is null
+      // so connectToLiveKit will attempt getUserMedia again with a clear error.
+      if (!_micTestStream) window._auraMicStream = null;
+      _finishMicTest();
+    });
+  }
+
+  // ── Button intercept (capture phase fires before main.js) ─────────────────
+  function enterListeningState() {
+    // Show mic test step first
+    showMicTest();
+  }
+
+  if (localStorage.getItem('aura_ob')) {
+    // Returning user — skip onboarding AND mic test, go straight to session
+    requestAnimationFrame(() => {
+      _doEnterListeningState();
+      // Small delay to let the DOM settle before requesting mic
+      setTimeout(_waitAndStartCapture, 300);
+    });
+  }
+
+  if (obBtn) obBtn.addEventListener('click', enterListeningState, true);
+  if (onboardingEl) {
+    onboardingEl.addEventListener('click', (e) => {
+      if (e.target === onboardingEl) enterListeningState();
+    }, true);
+  }
+
+  // ── Cards → results state ─────────────────────────────────────────────────
+  const cardsContainer = document.getElementById('cards');
+  new MutationObserver(() => {
+    const hasCards = cardsContainer?.children.length > 0;
+    document.body.classList.toggle('state-results',  hasCards);
+    document.body.classList.toggle('state-listening', !hasCards);
+  }).observe(cardsContainer, { childList: true });
+
+  // ── Hook particle emotion to main.js state (#2) ───────────────────────────
+  const MAX_WAIT = 5000, TICK = 50;
+  let waited = 0;
+  const patchInterval = setInterval(() => {
+    waited += TICK;
+    if (window._aura) {
+      const _orig = window._aura.setEmotionTarget.bind(window._aura);
+      window._aura.setEmotionTarget = (name) => {
+        _orig(name);
+        window.ParticleAura.setEmotion(name);
+      };
+      window.ParticleAura.setEmotion('Neutral');
+      clearInterval(patchInterval);
+    }
+    if (waited >= MAX_WAIT) clearInterval(patchInterval);
+  }, TICK);
+
+  // ── Mic volume → particle explosion (via AudioAnalyser) ───────────────────
+  let _micAnalyser = null, _micDataArray = null, _volumeRafId = null;
+
+  function _tickVolume() {
+    _volumeRafId = requestAnimationFrame(_tickVolume);
+    if (_micAnalyser) {
+      _micAnalyser.getByteFrequencyData(_micDataArray);
+      const avg = _micDataArray.reduce((a, b) => a + b, 0) / _micDataArray.length / 128;
+      window.ParticleAura.setVolume(avg);
+      if (window._aura && window._aura.feedVolume) window._aura.feedVolume(avg);
+    }
+  }
+
+  /**
+   * Wire a MediaStream to the particle volume analyser.
+   * Called by livekit.js after mic permission granted.
+   * @param {MediaStream} mediaStream
+   */
+  window._auraSetMicStream = function (mediaStream) {
+    try {
+      const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+      const src  = ctx.createMediaStreamSource(mediaStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      _micAnalyser  = analyser;
+      _micDataArray = new Uint8Array(analyser.frequencyBinCount);
+      if (!_volumeRafId) _tickVolume();
+    } catch (e) {
+      console.warn('[bootstrap] Could not attach mic analyser:', e);
+    }
+  };
+
+  _tickVolume();
+
+  // ── PWA service worker registration (#16) ────────────────────────────────
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./service-worker.js')
+      .then(reg => console.log('[SW] Registered, scope:', reg.scope))
+      .catch(err => console.warn('[SW] Registration failed:', err));
+  }
+</script>
+
+</body>
+</html>

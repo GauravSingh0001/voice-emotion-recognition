@@ -1,0 +1,524 @@
+<!--
+  result.html — Aura · Session Analysis Report
+
+  To deploy: update window.ENV_BACKEND_URL below to your production backend URL.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <!-- CSP (#15) -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src  'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;
+    style-src   'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com;
+    font-src    'self' https://fonts.gstatic.com;
+    connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.livekit.cloud wss://*.livekit.cloud http://localhost:8000 ws://localhost:8000;
+    img-src     'self' data:;
+  "/>
+  <title>VOICE ANALYSIS · Neubrutal Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <!-- =========================================================
+       ENV INJECTION — update these before deploying to production
+       BACKEND_URL  → your Railway / Render / VPS backend URL
+       SUPABASE_*   → from app.supabase.com → Project Settings → API
+       ========================================================= -->
+  <script>
+    window.ENV_BACKEND_URL       = 'http://localhost:8000';
+    window.ENV_SUPABASE_URL      = 'https://vllamwlfahwsmraudkzj.supabase.co';
+    window.ENV_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGFtd2xmYWh3c21yYXVka3pqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNDgwMzQsImV4cCI6MjA5MTkyNDAzNH0.pGWcESO0teYhH6DJAWLQxldmnyYO6FkDef7UlDGC4as';
+
+    // ⚠️ DEPLOYMENT VALIDATION: Warn if build-time injection was skipped
+    if (window.ENV_BACKEND_URL === 'http://localhost:8000' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      console.warn('⚠️ BUILD INJECTION SKIPPED: ENV_BACKEND_URL is localhost but origin is remote. Ensure scripts/inject-env.js runs before deploy.');
+    }
+  </script>
+  <!-- Chart.js loaded lazily inside renderChart() (#13) -->
+  <!-- emotion-config.js loaded before inline script (#2) -->
+  <script src="emotion-config.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family:'Inter','Space Mono',monospace;
+      background:#f0f0f0; color:#000; min-height:100vh;
+      padding:24px; position:relative;
+    }
+    body::before {
+      content:""; position:fixed; top:0; left:0; width:100%; height:100%;
+      background-image:linear-gradient(rgba(0,0,0,0.03) 1px,transparent 1px),
+                       linear-gradient(90deg,rgba(0,0,0,0.03) 1px,transparent 1px);
+      background-size:40px 40px; pointer-events:none; z-index:0;
+    }
+    .content-wrapper { position:relative; z-index:2; max-width:1400px; margin:0 auto; }
+    h1,h2,h3 { font-weight:700; text-transform:uppercase; letter-spacing:-0.02em; font-family:'Space Mono',monospace; }
+    h1 { font-size:3.5rem; line-height:1; margin-bottom:.5rem; border-bottom:5px solid #000; display:inline-block; padding-bottom:8px; }
+    h2 { font-size:1.8rem; margin-bottom:1rem; border-left:12px solid #000; padding-left:16px; }
+    .neo-card { background:#fff; border:4px solid #000; box-shadow:10px 10px 0 #000; padding:24px; transition:transform .1s ease; }
+    .neo-card:hover { transform:translate(-2px,-2px); box-shadow:14px 14px 0 #000; }
+    .dashboard-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:24px; margin-top:32px; }
+    .col-span-2 { grid-column:span 2; }
+    .col-span-4 { grid-column:span 4; }
+    .row-span-2 { grid-row:span 2; }
+    @media(max-width:900px){
+      .dashboard-grid { grid-template-columns:1fr; gap:20px; }
+      .col-span-2,.col-span-4 { grid-column:span 1; }
+      body { padding:16px; } h1 { font-size:2.5rem; }
+    }
+    .back-btn {
+      display:inline-flex; align-items:center; gap:8px;
+      background:#ffdd00; border:3px solid #000; box-shadow:5px 5px 0 #000;
+      padding:10px 20px; font-weight:700; text-transform:uppercase;
+      text-decoration:none; color:#000; font-family:'Space Mono',monospace;
+      margin-bottom:20px; transition:.1s;
+    }
+    .back-btn:hover { background:#000; color:#fff; box-shadow:6px 6px 0 #444; }
+    .emotion-tag { display:inline-block; background:#000; color:#fff; padding:6px 16px; border:2px solid #000; font-weight:700; text-transform:uppercase; font-size:.9rem; }
+    .emotion-tag.sarcastic { background:#9D4EDD; }
+    .transcript-block { background:#e0e0e0; border:3px solid #000; padding:20px; font-size:1.4rem; line-height:1.4; font-weight:500; margin:16px 0; box-shadow:inset 3px 3px 0 rgba(0,0,0,0.1); }
+    .stat-row { display:flex; justify-content:space-between; border-bottom:2px solid #000; padding:12px 0; font-weight:600; }
+    .stat-row:last-child { border-bottom:none; }
+    .progress-bar { height:20px; background:#ccc; border:2px solid #000; margin:10px 0; }
+    .progress-fill { height:100%; background:#ff3366; width:0%; }
+    .peak-display { text-align:center; background:#ffe600; border:3px solid #000; padding:16px; }
+    .peak-emoji { font-size:4rem; line-height:1; }
+    .peak-name { font-size:2rem; font-weight:800; text-transform:uppercase; }
+    .chart-container { position:relative; height:220px; width:100%; margin-top:10px; }
+    .insight-list { list-style:none; }
+    .insight-list li { padding:10px 0; border-bottom:2px solid #000; font-weight:500; display:flex; gap:8px; }
+    .insight-list li::before { content:"→"; font-weight:700; }
+    .audio-controls { display:flex; align-items:center; gap:16px; margin-top:12px; }
+    .play-btn { background:#000; color:#fff; border:2px solid #000; padding:12px 24px; font-weight:700; text-transform:uppercase; cursor:pointer; box-shadow:4px 4px 0 #666; transition:.1s; }
+    .play-btn:hover { background:#ffdd00; color:#000; box-shadow:6px 6px 0 #000; }
+    /* Loading / error states */
+    #loading-state { text-align:center; padding:80px 20px; font-family:'Space Mono',monospace; font-size:1.2rem; }
+    #error-state { display:none; background:#ffe0e0; border:4px solid #000; box-shadow:8px 8px 0 #000; padding:24px; margin:24px 0; font-family:'Space Mono',monospace; }
+  </style>
+</head>
+<body>
+<div class="content-wrapper">
+  <a href="index.html" class="back-btn">← BACK TO AURA</a>
+  <a id="replay-btn" class="back-btn" style="background:#000;color:#fff;margin-left:12px;" href="#"
+     title="Replay this session's emotion timeline on the particle orb">▶ REPLAY AURA</a>
+
+  <!-- Loading indicator -->
+  <div id="loading-state">⏳ Loading analysis data…</div>
+
+  <!-- Error indicator -->
+  <div id="error-state">
+    <strong>⚠️ LOAD ERROR</strong>
+    <p id="error-message" style="margin-top:8px;"></p>
+    <div style="margin-top:16px; display:flex; gap:12px; align-items:center;">
+      <button onclick="location.reload()" class="back-btn" style="background:#4A6FA5;color:#fff;cursor:pointer;border:3px solid #000;margin:0;">Retry Connect</button>
+      <a href="?session=demo" class="back-btn" style="margin:0;">View Demo Report</a>
+    </div>
+  </div>
+
+  <!-- Main dashboard (hidden until data loads) -->
+  <div id="dashboard" style="display:none;">
+    <!-- Header Card -->
+    <div class="neo-card col-span-4" style="margin-bottom:0;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+        <div>
+          <div style="font-family:'Space Mono';font-size:1rem;margin-bottom:5px;">SESSION REPORT</div>
+          <h1>VOICE<br>ANALYSIS</h1>
+        </div>
+        <div style="text-align:right;">
+          <div class="emotion-tag" id="overall-emotion" style="font-size:1.2rem;padding:10px 20px;"></div>
+          <div style="margin-top:12px;font-weight:600;" id="session-timestamp"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bento Grid -->
+    <div class="dashboard-grid">
+      <!-- TRANSCRIPT -->
+      <div class="neo-card col-span-2" id="transcript-card">
+        <h2>📝 TRANSCRIPT</h2>
+        <div class="transcript-block" id="transcript-text"></div>
+        <div style="display:flex;gap:24px;margin-top:8px;">
+          <div><span style="font-weight:400;">Language</span> <strong id="language-label">English</strong></div>
+          <div><span style="font-weight:400;">Words</span> <strong id="word-count"></strong></div>
+        </div>
+        <div id="sarcasm-marker" style="margin-top:16px;"></div>
+      </div>
+
+      <!-- PEAK -->
+      <div class="neo-card">
+        <h2>🎯 PEAK</h2>
+        <div class="peak-display">
+          <div class="peak-emoji" id="peak-emoji"></div>
+          <div class="peak-name" id="peak-emotion"></div>
+          <div style="font-weight:600;margin:8px 0;" id="peak-confidence"></div>
+          <div style="border-top:2px solid #000;padding-top:8px;" id="peak-time"></div>
+        </div>
+      </div>
+
+      <!-- BREAKDOWN -->
+      <div class="neo-card">
+        <h2>📊 BREAKDOWN</h2>
+        <div id="emotion-distribution"></div>
+      </div>
+
+      <!-- TIMELINE -->
+      <div class="neo-card col-span-2 row-span-2">
+        <h2>📈 INTENSITY TIMELINE</h2>
+        <div class="chart-container" id="chart-wrap">
+          <!-- Loading spinner shown while Chart.js lazy-loads (#13) -->
+          <div id="chart-loading" style="display:flex;align-items:center;justify-content:center;height:100%;font-family:'Space Mono',monospace;font-size:.9rem;opacity:.5;">Loading chart…</div>
+          <canvas id="emotion-chart" style="display:none;"></canvas>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:8px;font-weight:600;">
+          <span>0:00</span>
+          <span id="mid-time"></span>
+          <span id="end-time"></span>
+        </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:20px;">
+          <div><span style="display:inline-block;width:16px;height:16px;background:#FFD166;border:2px solid #000;margin-right:4px;"></span>Happy</div>
+          <div><span style="display:inline-block;width:16px;height:16px;background:#4A6FA5;border:2px solid #000;"></span> Sad</div>
+          <div><span style="display:inline-block;width:16px;height:16px;background:#EF476F;border:2px solid #000;"></span> Frustrated</div>
+          <div><span style="display:inline-block;width:16px;height:16px;background:#06D6A0;border:2px solid #000;"></span> Surprised</div>
+          <div><span style="display:inline-block;width:16px;height:16px;background:#A0AAB5;border:2px solid #000;"></span> Neutral</div>
+        </div>
+      </div>
+
+      <!-- INSIGHTS -->
+      <div class="neo-card">
+        <h2>💡 INSIGHTS</h2>
+        <ul class="insight-list" id="insights-list"></ul>
+      </div>
+
+      <!-- SARCASM / CONTEXT -->
+      <div class="neo-card" id="sarcasm-card" style="background:#f8f0ff;display:none;">
+        <h2 style="border-left-color:#9D4EDD;">🔮 CONTEXT</h2>
+        <div id="sarcasm-content"></div>
+      </div>
+
+      <!-- STATS -->
+      <div class="neo-card">
+        <h2>📋 STATS</h2>
+        <div class="stat-row"><span>Speech segments</span><strong id="segment-count"></strong></div>
+        <div class="stat-row"><span>Avg confidence</span><strong id="avg-confidence"></strong></div>
+        <div class="stat-row"><span>Dominant emotion</span><strong id="dominant-emotion"></strong></div>
+        <div class="stat-row"><span>Variability</span><strong id="variability"></strong></div>
+      </div>
+
+      <!-- PLAYBACK -->
+      <div class="neo-card col-span-2">
+        <h2>🔊 PLAYBACK</h2>
+        <div class="audio-controls">
+          <button class="play-btn" id="play-pause-btn">▶ PLAY</button>
+          <div style="flex:1;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill" style="width:0%;"></div>
+            </div>
+          </div>
+          <span id="time-display" style="font-weight:700;"></span>
+        </div>
+        <p style="margin-top:16px;opacity:0.7;">* Demo simulation — actual playback connects to backend.</p>
+      </div>
+    </div><!-- end grid -->
+  </div><!-- end dashboard -->
+</div><!-- end content-wrapper -->
+
+<script>
+(function () {
+  // ── Configuration ───────────────────────────────────────────────────────────
+  const BACKEND_URL = (window.ENV_BACKEND_URL || 'http://localhost:8000').replace(/\/$/, '');
+
+  // ── Read session from URL ───────────────────────────────────────────────────
+  const params    = new URLSearchParams(location.search);
+  const sessionId = params.get('session') ||
+                    sessionStorage.getItem('aura_session_id') ||
+                    'demo';
+
+  let analysisData = null;
+  let chartInstance = null;
+
+  // ── Fetch / load data ───────────────────────────────────────────────────────
+  async function loadAnalysisData() {
+    // Try to get data from backend
+
+    try {
+      const resp = await fetch(`${BACKEND_URL}/session/${sessionId}/report`);
+      if (!resp.ok) {
+        throw new Error(`Server returned HTTP ${resp.status}`);
+      }
+      const json = await resp.json();
+
+      // Normalise backend response → internal schema
+      analysisData = {
+        sessionId:         json.session_id     || sessionId,
+        timestamp:         json.timestamp      || '',
+        duration:          json.duration       || 0,
+        transcript:        json.transcript     || '',
+        language:          json.language       || 'English',
+        wordCount:         json.wordCount      || (json.transcript || '').split(' ').length,
+        overallEmotion:    json.overallEmotion || json.final_emotion || 'Neutral',
+        overallConfidence: json.overallConfidence || json.confidence || 0,
+        peakEmotion:       json.peakEmotion    || { emotion:'Neutral', confidence:0, timestamp:'0:00' },
+        emotions:          json.emotions       || { Neutral:100 },
+        timeline:          json.timeline       || [],
+        sarcasmDetected:   json.sarcasmDetected || false,
+        sarcasmNote:       json.sarcasmNote    || '',
+        insights:          json.insights       || [],
+        segments:          json.segments       || 1,
+        avgConfidence:     json.avgConfidence  || json.confidence || 0,
+        dominantEmotion:   json.dominantEmotion || json.final_emotion || 'Neutral',
+        variability:       json.variability    || 'Moderate',
+      };
+
+      renderDashboard();
+    } catch (err) {
+      console.error('[result.html] Failed to load session data:', err);
+      if (sessionId !== 'demo') {
+        try {
+          const verdictsStr = sessionStorage.getItem('aura_verdicts');
+          if (verdictsStr) {
+            const verdicts = JSON.parse(verdictsStr);
+            if (verdicts && verdicts.length > 0) {
+              console.log('[Aura:Offline] Aggregating offline verdicts:', verdicts.length);
+              const lastV = verdicts[verdicts.length - 1];
+              
+              const eMap = {};
+              let sumConf = 0;
+              verdicts.forEach(v => {
+                const em = v.final_emotion || 'Neutral';
+                eMap[em] = (eMap[em] || 0) + 1;
+                sumConf += (v.confidence || 0);
+              });
+              
+              let dom = 'Neutral', maxCount = 0;
+              for (const [k, v] of Object.entries(eMap)) {
+                if (v > maxCount) { maxCount = v; dom = k; }
+                eMap[k] = (v / verdicts.length) * 100;
+              }
+
+              const timeline = verdicts.map((v, i) => ({ time: i*5, [v.final_emotion || 'Neutral']: 1 }));
+
+              analysisData = {
+                sessionId:         sessionId,
+                timestamp:         new Date(lastV.ts || Date.now()).toLocaleString(),
+                duration:          verdicts.length * 5,
+                transcript:        verdicts.map(v => v.transcript).join('. '),
+                language:          'English',
+                wordCount:         verdicts.reduce((sum, v) => sum + (v.transcript || '').split(' ').length, 0),
+                overallEmotion:    dom,
+                overallConfidence: sumConf / verdicts.length,
+                peakEmotion:       { emotion: dom, confidence: lastV.confidence || 0, timestamp: 'Last' },
+                emotions:          eMap,
+                timeline:          timeline,
+                sarcasmDetected:   false,
+                sarcasmNote:       '',
+                insights:          ['Offline mode fallback data. Displaying aggregated metrics from your local cache.'],
+                segments:          verdicts.length,
+                avgConfidence:     sumConf / verdicts.length,
+                dominantEmotion:   dom,
+                variability:       Object.keys(eMap).length > 2 ? 'High' : 'Low',
+              };
+              
+              const banner = document.createElement('div');
+              banner.style.cssText = 'background: #ffdd00; color: #000; padding: 12px; font-weight: bold; text-align: center; border: 3px solid #000; margin-bottom: 24px; font-family: "Space Mono", monospace;';
+              banner.textContent = 'Offline mode – showing last session data.';
+              document.getElementById('dashboard').prepend(banner);
+              
+              renderDashboard();
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('Could not parse offline verdicts:', e);
+        }
+      }
+      showError(err.message);
+    }
+  }
+
+  function showError(msg) {
+    document.getElementById('loading-state').style.display = 'none';
+    const errEl = document.getElementById('error-state');
+    errEl.style.display = 'block';
+    document.getElementById('error-message').textContent = msg;
+  }
+
+  // ── Render all dashboard panels ─────────────────────────────────────────────
+  function renderDashboard() {
+    const d = analysisData;
+
+    document.getElementById('loading-state').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+
+    // Header
+    const overallEl = document.getElementById('overall-emotion');
+    const pct = Math.round(d.overallConfidence * 100);
+    const emojiMap = { Happy:'😊', Sad:'😢', Frustrated:'😤', Neutral:'😐', Surprised:'😲', Sarcastic:'🔮', Angry:'😡' };
+    overallEl.textContent = `${emojiMap[d.overallEmotion]||'😐'} ${d.overallEmotion.toUpperCase()} ${pct}%`;
+    if (d.sarcasmDetected) overallEl.classList.add('sarcastic');
+
+    document.getElementById('session-timestamp').textContent =
+      d.timestamp + (d.duration ? ` · ${d.duration}s` : '');
+
+    // Transcript
+    document.getElementById('transcript-text').textContent = d.transcript ? `"${d.transcript}"` : '(no transcript)';
+    document.getElementById('language-label').textContent = d.language || 'English';
+    document.getElementById('word-count').textContent = d.wordCount || 0;
+
+    // Peak
+    document.getElementById('peak-emoji').textContent      = emojiMap[d.peakEmotion.emotion] || '😐';
+    document.getElementById('peak-emotion').textContent    = (d.peakEmotion.emotion||'—').toUpperCase();
+    document.getElementById('peak-confidence').textContent = `${Math.round((d.peakEmotion.confidence||0)*100)}% confidence`;
+    document.getElementById('peak-time').textContent       = `at ${d.peakEmotion.timestamp||'—'}`;
+
+    // Breakdown
+    // Use unified palette if available, else inline fallback (#2)
+    const colorMap = window.EMOTION_PALETTE
+      ? Object.fromEntries(Object.entries(window.EMOTION_PALETTE.colors).map(([k, v]) => [k, v.c1]))
+      : { Happy:'#FFD166', Neutral:'#A0AAB5', Frustrated:'#EF476F', Sad:'#4A6FA5', Surprised:'#06D6A0', Angry:'#EF476F', Sarcastic:'#9D4EDD' };
+    const distEl = document.getElementById('emotion-distribution');
+    distEl.innerHTML = '';
+    Object.entries(d.emotions).sort((a,b) => b[1]-a[1]).forEach(([em, val]) => {
+      const row = document.createElement('div');
+      row.className = 'stat-row';
+      row.innerHTML = `<span><span style="display:inline-block;width:16px;height:16px;background:${colorMap[em]||'#ccc'};border:2px solid #000;margin-right:8px;"></span>${em}</span><strong>${Math.round(val)}%</strong>`;
+      distEl.appendChild(row);
+    });
+
+    // Insights
+    const il = document.getElementById('insights-list');
+    il.innerHTML = (d.insights||[]).map(i => `<li>${i}</li>`).join('');
+
+    // Sarcasm
+    if (d.sarcasmDetected) {
+      document.getElementById('sarcasm-card').style.display = '';
+      document.getElementById('sarcasm-content').innerHTML = `
+        <p style="font-weight:700;background:#9D4EDD;color:#fff;padding:6px 12px;display:inline-block;border:2px solid #000;">⚠️ SARCASM DETECTED</p>
+        <p style="margin-top:12px;font-weight:500;">${d.sarcasmNote}</p>`;
+      document.getElementById('sarcasm-marker').innerHTML =
+        `<span style="background:#9D4EDD;color:#fff;padding:4px 12px;border:2px solid #000;">⚠️ SARCASM</span>`;
+    }
+
+    // Stats
+    document.getElementById('segment-count').textContent   = d.segments;
+    document.getElementById('avg-confidence').textContent  = `${Math.round(d.avgConfidence*100)}%`;
+    document.getElementById('dominant-emotion').textContent = d.dominantEmotion;
+    document.getElementById('variability').textContent     = d.variability;
+
+    // Timeline chart
+    renderChart(d);
+
+    // Timeline labels
+    const dur = d.duration || 0;
+    document.getElementById('mid-time').textContent = `0:${String(Math.floor(dur/2)).padStart(2,'0')}`;
+    document.getElementById('end-time').textContent = `0:${String(Math.floor(dur)).padStart(2,'0')}`;
+
+    // Playback simulation
+    initPlayback(dur);
+  }
+
+  // ── Chart (lazy-loaded, #13) ──────────────────────────────────────────────
+  async function renderChart(d) {
+    if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+
+    const loadingEl = document.getElementById('chart-loading');
+    const chartCanvas = document.getElementById('emotion-chart');
+
+    // Lazy-import Chart.js
+    if (typeof Chart === 'undefined') {
+      try {
+        await import('https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js');
+        // Wait one tick for the global to register
+        await new Promise(r => setTimeout(r, 50));
+      } catch (err) {
+        if (loadingEl) loadingEl.textContent = 'Chart.js failed to load. Are you offline?';
+        return;
+      }
+    }
+    if (loadingEl)    loadingEl.style.display = 'none';
+    if (chartCanvas)  chartCanvas.style.display = '';
+
+    const colorMap = window.EMOTION_PALETTE
+      ? Object.fromEntries(Object.entries(window.EMOTION_PALETTE.colors).map(([k, v]) => [k, v.c1]))
+      : { Happy:'#FFD166', Neutral:'#A0AAB5', Frustrated:'#EF476F', Sad:'#4A6FA5', Surprised:'#06D6A0' };
+
+    const labels  = (d.timeline||[]).map(p => `${p.time}s`);
+    const mkDs    = (key, color) => ({
+      label: key, borderColor: color, backgroundColor:'transparent',
+      data:  (d.timeline||[]).map(p => p[key]||0),
+      tension:.3, borderWidth:4,
+      pointBorderColor:'#000', pointBorderWidth:2,
+    });
+
+    const cCtx = chartCanvas.getContext('2d');
+    chartInstance = new Chart(cCtx, {
+      type:'line',
+      data: {
+        labels,
+        datasets: [
+          mkDs('Happy',      colorMap.Happy      || '#FFD166'),
+          mkDs('Neutral',    colorMap.Neutral    || '#A0AAB5'),
+          mkDs('Frustrated', colorMap.Frustrated || '#EF476F'),
+          mkDs('Sad',        colorMap.Sad        || '#4A6FA5'),
+          mkDs('Surprised',  colorMap.Surprised  || '#06D6A0'),
+        ],
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        plugins: { legend:{display:false}, tooltip:{mode:'index'} },
+        scales: {
+          y:{ beginAtZero:true, max:1, grid:{color:'#000',lineWidth:1}, ticks:{color:'#000'} },
+          x:{ grid:{display:false}, ticks:{color:'#000'} },
+        },
+        elements:{ point:{ radius:4, hoverRadius:7, backgroundColor:'#fff', borderWidth:2 } },
+      },
+    });
+  }
+
+  // ── Playback ─────────────────────────────────────────────────────────────────
+  function initPlayback(duration) {
+    let isPlaying = false, progress = 0, interval;
+    const playBtn  = document.getElementById('play-pause-btn');
+    const fill     = document.getElementById('progress-fill');
+    const display  = document.getElementById('time-display');
+    const dur = duration || 47;
+
+    display.textContent = `0:00 / 0:${String(Math.floor(dur)).padStart(2,'0')}`;
+
+    playBtn.addEventListener('click', () => {
+      if (isPlaying) {
+        clearInterval(interval); isPlaying = false;
+        playBtn.textContent = '▶ PLAY';
+      } else {
+        interval = setInterval(() => {
+          progress += 1;
+          if (progress >= 100) {
+            clearInterval(interval); isPlaying = false;
+            playBtn.textContent = '▶ PLAY'; progress = 100;
+          }
+          fill.style.width = progress + '%';
+          const s = Math.floor((progress/100)*dur);
+          display.textContent = `0:${String(s).padStart(2,'0')} / 0:${String(Math.floor(dur)).padStart(2,'0')}`;
+        }, dur * 10);
+        playBtn.textContent = '⏸ PAUSE'; isPlaying = true;
+      }
+    });
+  }
+
+  // ── Replay button (#6) ────────────────────────────────────────────────────
+  function initReplayBtn() {
+    const btn = document.getElementById('replay-btn');
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const sid = sessionId || 'demo';
+      window.location.href = `index.html?replay=${sid}`;
+    });
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  loadAnalysisData().then(() => initReplayBtn());
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+# Real-Time Emotion Intelligence — Master requirements
+# Install with:
+#   pip install -r requirements.txt
+#
+# For CPU-only PyTorch (recommended on laptops and cloud free tiers):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+
+# ── Shared / Config ────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+httpx>=0.27.0
+
+# ── Module 1: LiveKit ─────────────────────────────────────────────────────────
+livekit>=0.11.0
+livekit-api>=0.7.0
+
+# ── Module 2: Signal Processor ────────────────────────────────────────────────
+# torch and torchaudio are installed separately (see comment above)
+librosa>=0.10.0
+noisereduce>=3.0.0
+numpy>=1.24.0
+onnxruntime>=1.17.0
+soundfile>=0.12.0
+
+# ── Module 3: Orchestrator ────────────────────────────────────────────────────
+fastapi==0.109.0
+uvicorn[standard]>=0.30.0
+aiohttp>=3.9.0
+
+# ── Module 5: Groq ────────────────────────────────────────────────────────────
+groq>=0.9.0
+
+# ── Module 6: Supabase ────────────────────────────────────────────────────────
+supabase>=2.5.0
+
+# ── Module 7: Dashboard ───────────────────────────────────────────────────────
+rich>=13.7.0

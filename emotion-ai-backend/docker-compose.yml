@@ -1,0 +1,48 @@
+version: "3.8"
+# ============================================================
+# docker-compose.yml
+# ============================================================
+# OPTIONAL: Runs a local Supabase stack for development
+# so you don't need a cloud Supabase project.
+#
+# Usage:
+#   docker-compose up -d
+#   # Then set in your .env:
+#   #   SUPABASE_URL=http://localhost:8000
+#   #   SUPABASE_ANON_KEY=<from supabase/config.toml>
+#
+# This does NOT containerize the Python services—they run
+# natively per the zero-DevOps constraint.
+# ============================================================
+
+services:
+  supabase-db:
+    image: supabase/postgres:15.1.0.147
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - supabase-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  supabase-kong:
+    image: kong:2.8.1
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./docker/kong.yml:/kong/kong.yml:ro
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+
+volumes:
+  supabase-db-data:

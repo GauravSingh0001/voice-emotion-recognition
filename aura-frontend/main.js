@@ -708,7 +708,7 @@ function subscribeToVerdicts(sessionId) {
     supabaseChannel = supabaseClient
       .channel('db-changes')
       .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'emotion_sessions' }, 
+        { event: 'INSERT', schema: 'public', table: 'emotion_sessions', filter: `session_id=eq.${sessionId}` }, 
         (payload) => {
           console.log('[Aura:Supabase] REALTIME RECEIVED:', payload);
           const row = payload.new;

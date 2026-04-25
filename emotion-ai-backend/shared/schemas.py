@@ -34,6 +34,8 @@ class Emotion(str, Enum):
     SAD = "Sad"
     ANGRY = "Angry"
     SURPRISED = "Surprised"
+    SARCASTIC = "Sarcastic"
+    FRUSTRATED = "Frustrated"
     UNKNOWN = "Unknown"
 
 

@@ -54,8 +54,8 @@
     window.ENV_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGFtd2xmYWh3c21yYXVka3pqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNDgwMzQsImV4cCI6MjA5MTkyNDAzNH0.pGWcESO0teYhH6DJAWLQxldmnyYO6FkDef7UlDGC4as';
 
     // ⚠️ DEPLOYMENT VALIDATION: Warn if build-time injection was skipped
-    if (window.ENV_BACKEND_URL === 'http://localhost:8000' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      console.warn('⚠️ BUILD INJECTION SKIPPED: ENV_BACKEND_URL is localhost but origin is remote. Ensure scripts/inject-env.js runs before deploy.');
+    if (window.ENV_BACKEND_URL.includes('http://localhost:8000') && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      console.warn('⚠️ BUILD INJECTION SKIPPED: Placeholders still present. Run scripts/inject-env.js before deploy.');
     }
   </script>
 

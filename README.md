@@ -51,59 +51,51 @@ The platform follows a split-path architecture, blending local edge inference fo
 
 ## 🗂 Project Structure
 
-The repository is divided into two primary workspaces:
+The repository is organized into two primary workspaces, managed by a root orchestrator:
 
-### 1. `aura-frontend/` (The Client)
-A lightweight, high-performance Progressive Web App (PWA) built with Vanilla JavaScript, HTML5, and CSS3. 
-- **Core Files:** `index.html`, `main.js`, `style.css`
-- **Visualization:** `particle-aura.js` (Three.js fluid orb reacting to voice and emotion).
-- **Audio Transport:** `livekit.js` (WebRTC microphone capture).
-- **Dashboard:** `result.html` (Detailed emotional breakdown, transcript, and timeline charts).
-- **Data Layer:** Connects directly to Supabase Realtime to receive inference verdicts instantly, bypassing the backend API.
-
-### 2. `emotion-ai-backend/` (The Engine)
-A high-throughput Python backend utilizing FastAPI, asyncio, and multiprocessing for audio signal processing.
-- **`services/orchestrator/`:** The FastAPI application bridging LiveKit, inference models, and Supabase.
-- **Models:** Runs `sherpa-onnx` (SenseVoice) for local, sub-second emotion classification.
-- **Cloud APIs:** Integrates with Groq (Whisper + Llama 3) for deep transcription and reasoning when a full utterance (marked by silence detection) is completed.
-- **Environment:** Managed via `.env` (LiveKit keys, Groq API keys, Supabase credentials).
+- **`aura-frontend/`**: Vanilla JS client with Three.js visualizations and Supabase Realtime integration.
+- **`emotion-ai-backend/`**: Python FastAPI backend for signal processing and local ONNX inference.
+- **`run.ps1`**: Root orchestrator for unified setup, development, and maintenance.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Windows)
 
-### Prerequisites
-- Node.js (for frontend serving and env injection)
-- Python 3.10+
-- Accounts/Keys for: LiveKit Cloud, Supabase, Groq.
+The project includes a root orchestrator script to handle environment setup and multi-process execution.
 
-### Backend Setup
-1. Navigate to `emotion-ai-backend/`.
-2. Create a virtual environment and install dependencies:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-3. Copy `.env.example` to `.env` and fill in your API keys.
-4. Run the backend orchestrator:
-   ```bash
-   ./run.ps1  # Or execute the Makefile targets if on Linux/Mac
-   ```
+### 1. Prerequisites
+- **Python 3.10+** (Added to PATH)
+- **Node.js** (For frontend serving)
+- **API Keys**: You will need keys for [LiveKit Cloud](https://livekit.io/), [Supabase](https://supabase.com/), and [Groq](https://groq.com/).
 
-### Frontend Setup
-1. Navigate to `aura-frontend/`.
-2. Inject your environment variables (uses the same `.env` values or relies on system variables):
-   ```bash
-   node scripts/inject-env.js
-   ```
-3. Serve the static files:
-   ```bash
-   npx serve .
-   # or
-   python -m http.server 3000
-   ```
-4. Open your browser to `http://localhost:3000`.
+### 2. Initial Setup
+Run the unified setup command to create the virtual environment, install dependencies, and download AI models:
+```powershell
+.\run.ps1 setup
+```
+
+### 3. Configuration
+1. Copy `emotion-ai-backend/.env.example` to `emotion-ai-backend/.env`.
+2. Fill in your credentials for LiveKit, Supabase, and Groq.
+3. (Optional) Run `node aura-frontend/scripts/inject-env.js` if you change frontend-specific variables.
+
+### 4. Run the Platform
+Start both the backend and frontend in separate windows:
+```powershell
+.\run.ps1 dev
+```
+
+---
+
+## 🛠 Orchestrator Commands
+
+| Command | Description |
+| :--- | :--- |
+| `.\run.ps1 setup` | One-time environment creation and model download. |
+| `.\run.ps1 dev` | Launches both backend and frontend for development. |
+| `.\run.ps1 backend` | Starts only the FastAPI orchestrator. |
+| `.\run.ps1 frontend`| Starts only the static frontend server. |
+| `.\run.ps1 clean` | Removes `__pycache__`, `.pyc`, and temporary recordings. |
 
 ---
 
@@ -111,3 +103,4 @@ A high-throughput Python backend utilizing FastAPI, asyncio, and multiprocessing
 - **Frontend**: HTML5, Vanilla JS, CSS3, Three.js, Chart.js, LiveKit Client SDK, Supabase JS SDK.
 - **Backend**: Python, FastAPI, asyncio, LiveKit Server SDK, Supabase Python SDK, Groq API.
 - **AI/ML Models**: Silero VAD, SenseVoice (via sherpa-onnx), Llama 3.3 70B, Whisper-Large-V3-Turbo.
+

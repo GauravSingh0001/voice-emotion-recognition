@@ -1,16 +1,32 @@
+/**
+ * inject-env.js — Build-time environment variable injector
+ *
+ * Replaces these three placeholders in index.html and result.html with
+ * values from .env or system environment variables:
+ *   __BACKEND_URL__       → BACKEND_URL       (default: http://localhost:8000)
+ *   __SUPABASE_URL__      → SUPABASE_URL      (required)
+ *   __SUPABASE_ANON_KEY__ → SUPABASE_ANON_KEY (required)
+ *
+ * Run before deploying: node scripts/inject-env.js
+ */
 const fs = require('fs');
 const path = require('path');
 
 // Simple .env parser for local testing
 try {
   const envContent = fs.readFileSync(path.join(__dirname, '../.env'), 'utf8');
-  envContent.split('\n').forEach(line => {
-    const match = line.match(/^([^=]+)=(.*)$/);
-    if (match) {
-      process.env[match[1].trim()] = match[2].trim();
+  envContent.split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const parts = trimmed.split('=');
+    if (parts.length >= 2) {
+      const key = parts[0].trim();
+      const val = parts.slice(1).join('=').trim();
+      process.env[key] = val;
     }
   });
-} catch (e) {
+}
+ catch (e) {
   console.log('No .env file found, relying on system environment variables.');
 }
 

@@ -45,6 +45,7 @@ from shared.schemas import (
     FastPathTrigger,
     ServiceHealth,
     SessionContext,
+    TranscriptionResult,
     UtteranceComplete,
     VADState,
     VADStateChange,
@@ -277,72 +278,312 @@ async def health_check():
 @app.post("/session/analyze-file", tags=["System"])
 async def analyze_file(file: UploadFile = File(...)):
     """
-    Analyze a WAV file directly — bypasses LiveKit/mic for offline testing.
-    Reads PCM from the WAV, runs Groq Whisper transcription + Llama judge,
-    stores the result in Supabase, and returns the full verdict.
+    Analyze a WAV file — hardened pipeline that mirrors the live microphone flow.
+
+    Pipeline:
+      Phase 1: Pre-flight silence check (RMS energy)
+      Phase 2: VAD segmentation + SenseVoice fast-path triggers
+      Phase 3: Speech-only concatenation → Groq Whisper (no hallucination)
+      Phase 4: Acoustic-enriched Groq Llama Judge
+      Phase 5: Store complete analysis in Supabase
     """
-    import wave, io, time as _time
+    import io
+    import time as _time
+
+    import numpy as np
+
+    from services.signal_processor.cleaner import TARGET_SAMPLE_RATE
+    from services.signal_processor.embedder import (
+        run_local_inference,
+        get_top_emotion,
+        mock_inference,
+        EMOTION_LABELS,
+    )
 
     session_id = str(uuid.uuid4())
     wav_bytes = await file.read()
 
-    # ── Extract PCM from WAV container ────────────────────────────────────────
+    # ── Phase 1: Load WAV → float32 numpy array ──────────────────────────────
     try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            sample_rate = wf.getframerate()
-            n_frames    = wf.getnframes()
-            pcm_bytes   = wf.readframes(n_frames)
-            duration_ms = (n_frames / max(sample_rate, 1)) * 1000
+        import librosa  # type: ignore
+
+        audio_f32, orig_sr = librosa.load(
+            io.BytesIO(wav_bytes), sr=None, mono=True
+        )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid WAV file: {exc}")
+        logger.warning("[AnalyzeFile] librosa load failed: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Invalid audio file: {exc}")
+
+    duration_s = len(audio_f32) / max(orig_sr, 1)
+    duration_ms = duration_s * 1000
 
     logger.info(
-        "analyze-file [%s]: %.1f ms audio @ %d Hz (%d bytes PCM)",
-        session_id[:8], duration_ms, sample_rate, len(pcm_bytes),
+        "[AnalyzeFile] %s | %.1f ms audio @ %d Hz (%d samples)",
+        session_id[:8], duration_ms, orig_sr, len(audio_f32),
     )
 
-    # ── Build an UtteranceComplete so we can reuse the existing Groq pipeline ─
+    # ── Phase 1: RMS silence check ────────────────────────────────────────────
+    rms = float(np.sqrt(np.mean(audio_f32 ** 2)))
+    logger.info("[AnalyzeFile] %s | RMS energy = %.6f", session_id[:8], rms)
+
+    RMS_SILENCE_THRESHOLD = 0.002
+    if rms < RMS_SILENCE_THRESHOLD:
+        logger.warning(
+            "[AnalyzeFile] %s | REJECTED — audio is silent (RMS %.6f < %.4f)",
+            session_id[:8], rms, RMS_SILENCE_THRESHOLD,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Audio is silent — no meaningful content detected.",
+        )
+
+    # ── Phase 2: Resample to 16kHz for VAD + inference ────────────────────────
+    if orig_sr != TARGET_SAMPLE_RATE:
+        import librosa as _lr
+
+        audio_16k = _lr.resample(
+            audio_f32, orig_sr=orig_sr, target_sr=TARGET_SAMPLE_RATE
+        )
+        logger.info(
+            "[AnalyzeFile] %s | Resampled %d Hz → %d Hz",
+            session_id[:8], orig_sr, TARGET_SAMPLE_RATE,
+        )
+    else:
+        audio_16k = audio_f32
+
+    # ── Phase 2: VAD — detect speech segments ─────────────────────────────────
+    speech_segments = _vad_detect_speech(audio_16k, TARGET_SAMPLE_RATE, session_id)
+    logger.info(
+        "[AnalyzeFile] %s | VAD found %d speech segment(s)",
+        session_id[:8], len(speech_segments),
+    )
+
+    if not speech_segments:
+        logger.warning(
+            "[AnalyzeFile] %s | REJECTED — no speech detected by VAD",
+            session_id[:8],
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="No speech detected in the audio file.",
+        )
+
+    # ── Phase 2: Run SenseVoice ONNX on 500ms windows → FastPathTriggers ─────
+    WINDOW_MS = 500
+    window_samples = int(TARGET_SAMPLE_RATE * WINDOW_MS / 1000)  # 8000
+    fast_path_history: list[FastPathTrigger] = []
+    window_index = 0
+
+    for seg_start, seg_end in speech_segments:
+        segment_audio = audio_16k[seg_start:seg_end]
+        offset = 0
+        while offset < len(segment_audio):
+            chunk = segment_audio[offset : offset + window_samples]
+            if len(chunk) < window_samples // 4:
+                break  # Skip tiny tail fragments
+
+            if cfg.MOCK_APIS:
+                probs = mock_inference(len(chunk))
+            else:
+                probs = run_local_inference(chunk, TARGET_SAMPLE_RATE)
+                if probs is None:
+                    probs = mock_inference(len(chunk))
+
+            top_emotion, confidence = get_top_emotion(probs)
+            trigger = FastPathTrigger(
+                session_id=session_id,
+                window_index=window_index,
+                emotion_logits=probs,
+                top_emotion=top_emotion,
+                top_confidence=confidence,
+                audio_duration_ms=float(WINDOW_MS),
+            )
+            fast_path_history.append(trigger)
+            window_index += 1
+            offset += window_samples
+
+    logger.info(
+        "[AnalyzeFile] %s | Generated %d fast-path windows",
+        session_id[:8], len(fast_path_history),
+    )
+
+    # ── Phase 3: Concatenate speech-only audio for Groq Whisper ───────────────
+    speech_chunks = [audio_16k[s:e] for s, e in speech_segments]
+    speech_only = np.concatenate(speech_chunks)
+    speech_duration_ms = len(speech_only) / TARGET_SAMPLE_RATE * 1000
+
+    # Convert to 16-bit PCM bytes for the Whisper transport
+    pcm_int16 = (speech_only * 32767).clip(-32768, 32767).astype(np.int16)
+    speech_pcm_bytes = pcm_int16.tobytes()
+
+    logger.info(
+        "[AnalyzeFile] %s | Speech-only audio: %.0f ms (trimmed from %.0f ms)",
+        session_id[:8], speech_duration_ms, duration_ms,
+    )
+
     utterance = UtteranceComplete(
         session_id=session_id,
-        pcm_bytes=pcm_bytes,
-        sample_rate=sample_rate,
-        audio_duration_ms=duration_ms,
+        pcm_bytes=speech_pcm_bytes,
+        sample_rate=TARGET_SAMPLE_RATE,
+        audio_duration_ms=speech_duration_ms,
         timestamp_ms=_time.time() * 1000,
-        window_emotions=[],
+        window_emotions=fast_path_history,
     )
 
-    # ── 5A: Transcription ─────────────────────────────────────────────────────
     t0 = _time.perf_counter()
     transcript = await transcribe_utterance(utterance)
     transcription_ms = (_time.perf_counter() - t0) * 1000
 
-    # ── 5B: Emotion Judge ─────────────────────────────────────────────────────
-    verdict = await judge_emotion(session_id, transcript.text, [])
+    # Phase 3: Anti-hallucination guard on the transcript
+    cleaned_text = transcript.text.strip().strip(".,!?;:")
+    if len(cleaned_text) <= 1:
+        logger.info(
+            "[AnalyzeFile] %s | Transcript too short/empty → '(unintelligible)'",
+            session_id[:8],
+        )
+        transcript = TranscriptionResult(
+            session_id=session_id,
+            text="(unintelligible)",
+            latency_ms=transcript.latency_ms,
+        )
 
-    # ── 6: Store in Supabase ──────────────────────────────────────────────────
+    logger.info(
+        "[AnalyzeFile] %s | Whisper transcript: '%s' (%.0f ms)",
+        session_id[:8], transcript.text[:80], transcription_ms,
+    )
+
+    # ── Phase 4: Acoustic-enriched judge ──────────────────────────────────────
+    # Compute acoustic metadata for the judge
+    energy_level = "low" if rms < 0.01 else ("medium" if rms < 0.05 else "high")
+    word_count = len(transcript.text.split())
+    speaking_rate = (
+        round(word_count / (speech_duration_ms / 1000), 1)
+        if speech_duration_ms > 0 else 0.0
+    )
+
+    verdict = await judge_emotion(
+        session_id,
+        transcript.text,
+        fast_path_history,
+        rms_energy=rms,
+        energy_level=energy_level,
+        speaking_rate=speaking_rate,
+    )
+
+    # ── Phase 5: Store in Supabase ────────────────────────────────────────────
     try:
-        row_id = await store_emotion_result(utterance, transcript, verdict, user_id=None)
+        row_id = await store_emotion_result(
+            utterance, transcript, verdict, user_id=None
+        )
     except Exception as exc:
-        logger.warning("Supabase store failed: %s", exc)
+        logger.warning("[AnalyzeFile] Supabase store failed: %s", exc)
         row_id = None
 
     logger.info(
-        "analyze-file complete [%s]: '%s' → %s (%.2f)",
-        session_id[:8], transcript.text[:80], verdict.final_emotion, verdict.confidence,
+        "[AnalyzeFile] %s | COMPLETE: '%s' → %s (%.2f) | %d windows | row=%s",
+        session_id[:8],
+        transcript.text[:60],
+        verdict.final_emotion,
+        verdict.confidence,
+        len(fast_path_history),
+        row_id,
     )
 
     return {
-        "session_id":    session_id,
-        "filename":      file.filename,
-        "duration_ms":   round(duration_ms),
-        "sample_rate":   sample_rate,
-        "transcript":    transcript.text,
-        "final_emotion": verdict.final_emotion,
-        "confidence":    verdict.confidence,
-        "reasoning":     verdict.reasoning,
-        "supabase_row":  row_id,
+        "session_id": session_id,
+        "filename": file.filename,
+        "duration_ms": round(duration_ms),
+        "speech_duration_ms": round(speech_duration_ms),
+        "sample_rate": orig_sr,
+        "rms_energy": round(rms, 6),
+        "speech_segments": len(speech_segments),
+        "fast_path_windows": len(fast_path_history),
+        "transcript": transcript.text,
+        "final_emotion": verdict.final_emotion.value,
+        "confidence": verdict.confidence,
+        "reasoning": verdict.reasoning,
+        "fast_path_summary": verdict.fast_path_summary,
+        "emotion_timeline": [
+            {
+                "window": fp.window_index,
+                "emotion": fp.top_emotion.value,
+                "confidence": round(fp.top_confidence, 3),
+            }
+            for fp in fast_path_history
+        ],
+        "supabase_row": row_id,
         "transcription_latency_ms": round(transcription_ms),
     }
+
+
+# ── Static VAD helper for file analysis ──────────────────────────────────────
+
+def _vad_detect_speech(
+    audio_16k: "np.ndarray",
+    sample_rate: int,
+    session_id: str,
+    threshold: float = 0.5,
+    min_speech_ms: int = 250,
+) -> list[tuple[int, int]]:
+    """
+    Run Silero VAD over a complete 16kHz float32 audio array and return
+    a list of (start_sample, end_sample) tuples for each speech segment.
+
+    This is a static (non-streaming) wrapper around the same Silero model
+    used by the live VAD engine, designed for offline file analysis.
+    """
+    import numpy as np
+
+    from services.signal_processor.vad_engine import (
+        _silero_speech_prob,
+        SILERO_CHUNK_FRAMES,
+    )
+
+    chunk_size = SILERO_CHUNK_FRAMES  # 512 samples = 32ms @ 16kHz
+    n_samples = len(audio_16k)
+    merge_gap_samples = int(sample_rate * 0.3)  # merge segments < 300ms apart
+    min_speech_samples = int(sample_rate * min_speech_ms / 1000)
+
+    # Step 1: Classify each 32ms chunk as speech or silence
+    is_speech: list[bool] = []
+    for start in range(0, n_samples, chunk_size):
+        chunk = audio_16k[start : start + chunk_size]
+        if len(chunk) < chunk_size:
+            chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
+        prob = _silero_speech_prob(chunk)
+        is_speech.append(prob >= threshold)
+
+    # Step 2: Build raw segments from consecutive speech chunks
+    raw_segments: list[tuple[int, int]] = []
+    in_speech = False
+    seg_start = 0
+    for i, speech in enumerate(is_speech):
+        sample_pos = i * chunk_size
+        if speech and not in_speech:
+            seg_start = sample_pos
+            in_speech = True
+        elif not speech and in_speech:
+            raw_segments.append((seg_start, sample_pos))
+            in_speech = False
+    if in_speech:
+        raw_segments.append((seg_start, n_samples))
+
+    # Step 3: Merge segments that are close together
+    merged: list[tuple[int, int]] = []
+    for seg in raw_segments:
+        if merged and (seg[0] - merged[-1][1]) < merge_gap_samples:
+            merged[-1] = (merged[-1][0], seg[1])
+        else:
+            merged.append(seg)
+
+    # Step 4: Filter out segments shorter than min_speech_ms
+    final = [(s, e) for s, e in merged if (e - s) >= min_speech_samples]
+
+    logger.info(
+        "[AnalyzeFile] %s | VAD: %d raw → %d merged → %d final segments",
+        session_id[:8], len(raw_segments), len(merged), len(final),
+    )
+    return final
 
 
 @app.post("/session/start", tags=["Session"])
@@ -444,8 +685,17 @@ async def session_end(request: Request):
     """Terminate a session and release all resources."""
     body = await request.json()
     session_id = body.get("session_id", "")
+    return await _finalize_session_logic(session_id)
 
-    if session_id not in _sessions:
+
+@app.post("/session/{session_id}/finalize", tags=["Session"])
+async def session_finalize(session_id: str):
+    """Compatibility endpoint for session finalization via path parameter."""
+    return await _finalize_session_logic(session_id)
+
+
+async def _finalize_session_logic(session_id: str):
+    if not session_id or session_id not in _sessions:
         raise HTTPException(status_code=404, detail="Session not found.")
 
     # Cancel bot task
@@ -555,7 +805,10 @@ async def session_report(session_id: str):
     from datetime import datetime, timezone
     try:
         dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        ts_label = dt.strftime("%-d %b %Y, %-I:%M %p")
+        day = dt.day
+        month_year = dt.strftime("%b %Y")
+        hour_min = dt.strftime("%I:%M %p").lstrip("0")
+        ts_label = f"{day} {month_year}, {hour_min}"
     except Exception:
         ts_label = created_at or "—"
 

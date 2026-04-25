@@ -105,6 +105,13 @@ CREATE POLICY IF NOT EXISTS "Users insert own sessions"
 -- Grant permissions to authenticated users
 GRANT SELECT, INSERT ON public.emotion_sessions TO authenticated;
 
+-- Allow anonymous reads so the frontend (using anon key) can poll for verdicts
+CREATE POLICY "Allow public read for anon"
+    ON public.emotion_sessions FOR SELECT
+    USING (true);
+
+GRANT SELECT ON public.emotion_sessions TO anon;
+
 -- Enable Realtime (triggers INSERT events to subscribed browsers)
 ALTER PUBLICATION supabase_realtime ADD TABLE public.emotion_sessions;
 """
@@ -125,7 +132,7 @@ def _get_client():
     try:
         from supabase import create_client  # type: ignore
 
-        _client = create_client(cfg.SUPABASE_URL, cfg.SUPABASE_SERVICE_ROLE_KEY)
+        _client = create_client(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY)
         logger.info("Supabase client initialized for project: %s", cfg.SUPABASE_URL)
         return _client
     except ImportError:
@@ -157,15 +164,16 @@ async def store_emotion_result(
     window_emotions: List[FastPathTrigger] = utterance.window_emotions or []
     emotion_breakdown: Dict[str, float] = {}
     peak_emotion_data: Dict[str, Any] = {}
-    dominant_emotion: str = str(verdict.final_emotion)
+    dominant_emotion: str = verdict.final_emotion.value
     avg_confidence: float = verdict.confidence
-    fast_path_emotion: str = str(verdict.final_emotion)
+    fast_path_emotion: str = verdict.final_emotion.value
 
     if window_emotions:
         counts = Counter(fp.top_emotion for fp in window_emotions)
         total = len(window_emotions)
-        emotion_breakdown = {str(em): round((cnt / total) * 100, 1) for em, cnt in counts.items()}
-        dominant_emotion = str(counts.most_common(1)[0][0])
+        emotion_breakdown = {em.value if hasattr(em, "value") else str(em): round((cnt / total) * 100, 1) for em, cnt in counts.items()}
+        dominant_emotion = counts.most_common(1)[0][0]
+        if hasattr(dominant_emotion, "value"): dominant_emotion = dominant_emotion.value
         fast_path_emotion = dominant_emotion
         avg_confidence = round(
             sum(fp.top_confidence for fp in window_emotions) / total, 4
@@ -178,15 +186,15 @@ async def store_emotion_result(
         )
         peak_time_s = peak_window.window_index * 0.5
         peak_emotion_data = {
-            "emotion": str(peak_window.top_emotion),
+            "emotion": peak_window.top_emotion.value,
             "confidence": round(peak_window.top_confidence, 4),
             "timestamp": f"0:{int(peak_time_s):02d}",
         }
     else:
         # Fallback using only the verdict
-        emotion_breakdown = {str(verdict.final_emotion): 100.0}
+        emotion_breakdown = {verdict.final_emotion.value: 100.0}
         peak_emotion_data = {
-            "emotion": str(verdict.final_emotion),
+            "emotion": verdict.final_emotion.value,
             "confidence": round(verdict.confidence, 4),
             "timestamp": "0:00",
         }
@@ -197,7 +205,7 @@ async def store_emotion_result(
     for fp in window_emotions:
         point: Dict[str, Any] = {"time": round(fp.window_index * 0.5, 1)}
         for label in emotion_labels:
-            if str(fp.top_emotion) == label:
+            if fp.top_emotion.value == label:
                 point[label] = round(fp.top_confidence, 3)
             else:
                 point[label] = 0.0
@@ -206,12 +214,12 @@ async def store_emotion_result(
     if not timeline:
         dur_s = utterance.audio_duration_ms / 1000
         timeline = [
-            {"time": 0.0, str(verdict.final_emotion): verdict.confidence, "Neutral": 1 - verdict.confidence},
-            {"time": round(dur_s, 1), str(verdict.final_emotion): verdict.confidence, "Neutral": 1 - verdict.confidence},
+            {"time": 0.0, verdict.final_emotion.value: verdict.confidence, "Neutral": 1 - verdict.confidence},
+            {"time": round(dur_s, 1), verdict.final_emotion.value: verdict.confidence, "Neutral": 1 - verdict.confidence},
         ]
 
     # ── Sarcasm detection ─────────────────────────────────────────────────────
-    sarcasm_detected = str(verdict.final_emotion) in ("Sarcastic", "Passive-Aggressive")
+    sarcasm_detected = verdict.final_emotion.value in ("Sarcastic", "Passive-Aggressive")
     sarcasm_note = verdict.reasoning if sarcasm_detected else ""
 
     # ── Insights ──────────────────────────────────────────────────────────────
@@ -224,7 +232,7 @@ async def store_emotion_result(
         insights = [f"Primary emotion: {verdict.final_emotion}"]
 
     # ── Variability ───────────────────────────────────────────────────────────
-    unique_emotions = len(set(str(fp.top_emotion) for fp in window_emotions))
+    unique_emotions = len(set(fp.top_emotion.value for fp in window_emotions))
     if unique_emotions >= 3:
         variability = "High"
     elif unique_emotions == 2:
@@ -238,7 +246,7 @@ async def store_emotion_result(
         "session_id": utterance.session_id,
         "utterance_text": transcript.text,
         "fast_path_emotion": fast_path_emotion,
-        "final_emotion": str(verdict.final_emotion),
+        "final_emotion": verdict.final_emotion.value,
         "confidence": round(verdict.confidence, 4),
         "judge_reasoning": verdict.reasoning,
         "audio_duration_ms": int(utterance.audio_duration_ms),

@@ -32,8 +32,8 @@
     window.ENV_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsbGFtd2xmYWh3c21yYXVka3pqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzNDgwMzQsImV4cCI6MjA5MTkyNDAzNH0.pGWcESO0teYhH6DJAWLQxldmnyYO6FkDef7UlDGC4as';
 
     // ⚠️ DEPLOYMENT VALIDATION: Warn if build-time injection was skipped
-    if (window.ENV_BACKEND_URL === 'http://localhost:8000' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      console.warn('⚠️ BUILD INJECTION SKIPPED: ENV_BACKEND_URL is localhost but origin is remote. Ensure scripts/inject-env.js runs before deploy.');
+    if (window.ENV_BACKEND_URL.includes('http://localhost:8000') && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      console.warn('⚠️ BUILD INJECTION SKIPPED: Placeholders still present. Run scripts/inject-env.js before deploy.');
     }
   </script>
   <!-- Chart.js loaded lazily inside renderChart() (#13) -->
@@ -237,6 +237,16 @@
   let analysisData = null;
   let chartInstance = null;
 
+  /**
+   * Format seconds as M:SS
+   * @param {number} s
+   */
+  function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const rs = Math.floor(s % 60);
+    return `${m}:${String(rs).padStart(2, '0')}`;
+  }
+
   // ── Fetch / load data ───────────────────────────────────────────────────────
   async function loadAnalysisData() {
     // Try to get data from backend
@@ -410,8 +420,8 @@
 
     // Timeline labels
     const dur = d.duration || 0;
-    document.getElementById('mid-time').textContent = `0:${String(Math.floor(dur/2)).padStart(2,'0')}`;
-    document.getElementById('end-time').textContent = `0:${String(Math.floor(dur)).padStart(2,'0')}`;
+    document.getElementById('mid-time').textContent = formatTime(dur / 2);
+    document.getElementById('end-time').textContent = formatTime(dur);
 
     // Playback simulation
     initPlayback(dur);

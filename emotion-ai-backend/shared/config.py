@@ -35,19 +35,14 @@ class Settings:
     # ── Supabase ──────────────────────────────────────────────────────────────
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
-    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
     # ── Hugging Face (fallback) ───────────────────────────────────────────────
     HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
-    HF_EMOTION_MODEL: str = os.getenv(
-        "HF_EMOTION_MODEL",
-        "ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition",
-    )
 
     # ── Application ───────────────────────────────────────────────────────────
     ORCHESTRATOR_PORT: int = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
-    MOCK_APIS: bool = os.getenv("MOCK_APIS", "false").lower() == "true"
-    RECORD_UTTERANCES: bool = os.getenv("RECORD_UTTERANCES", "false").lower() == "true"
+    MOCK_APIS: bool = False # os.getenv("MOCK_APIS", "false").lower() == "true"
+    RECORD_UTTERANCES: bool = os.getenv("RECORD_UTTERANCES", "true").lower() == "true"
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     # ── Groq Rate-Limit Tracker (module-level, shared across import) ──────────

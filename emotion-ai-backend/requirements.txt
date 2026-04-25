@@ -26,6 +26,7 @@ soundfile>=0.12.0
 # ── Module 3: Orchestrator ────────────────────────────────────────────────────
 fastapi==0.109.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
 aiohttp>=3.9.0
 
 # ── Module 5: Groq ────────────────────────────────────────────────────────────

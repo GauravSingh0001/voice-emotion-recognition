@@ -213,10 +213,20 @@ and spoken content.
 You will receive:
 1. A transcription of spoken words
 2. A history of acoustic emotion detections (fast-path, every 500ms)
+3. (Optional) Acoustic metadata: RMS energy level and speaking rate
+
+Critical rules:
+- If the transcript is very short (≤2 words) and acoustic energy is extremely low,
+  treat the utterance as unintelligible and assign Neutral with low confidence (≤0.4).
+- If the transcript appears to be a Whisper hallucination (e.g. "Thank you", "Subscribe",
+  "Thanks for watching") and the acoustic fast-path shows Neutral with high confidence,
+  disregard the transcript and rely on acoustic signals only.
+- Always weigh the acoustic emotion timeline more heavily than transcript sentiment
+  when the two conflict.
 
 Respond ONLY with a valid JSON object with exactly these keys:
 {
-  "final_emotion": "<one of: Neutral, Happy, Sad, Angry, Surprised>",
+  "final_emotion": "<one of: Neutral, Happy, Sad, Angry, Surprised, Sarcastic, Frustrated>",
   "confidence": <float between 0.0 and 1.0>,
   "reasoning": "<brief explanation of your decision>",
   "fast_path_summary": "<summary of acoustic signal pattern>"
@@ -228,6 +238,10 @@ Do not include any text outside the JSON object."""
 def _build_judge_prompt(
     transcript: str,
     fast_path_history: List[FastPathTrigger],
+    *,
+    rms_energy: Optional[float] = None,
+    energy_level: Optional[str] = None,
+    speaking_rate: Optional[float] = None,
 ) -> str:
     emotion_timeline = []
     for i, fp in enumerate(fast_path_history[-10:]):  # Last 10 windows max
@@ -237,18 +251,37 @@ def _build_judge_prompt(
         )
     timeline_str = "\n".join(emotion_timeline) if emotion_timeline else "  (no fast-path data)"
 
-    return (
+    prompt = (
         f"TRANSCRIPT:\n\"{transcript}\"\n\n"
         f"ACOUSTIC EMOTION TIMELINE (fast-path, 500ms windows):\n{timeline_str}"
     )
+
+    # Append acoustic metadata when available (file upload flow)
+    if rms_energy is not None or energy_level or speaking_rate is not None:
+        prompt += "\n\nACOUSTIC METADATA:"
+        if energy_level:
+            prompt += f"\n  Energy level: {energy_level} (RMS={rms_energy:.4f})"
+        if speaking_rate is not None:
+            prompt += f"\n  Speaking rate: {speaking_rate} words/sec"
+
+    return prompt
 
 
 def _rule_based_fallback(
     session_id: str,
     fast_path_history: List[FastPathTrigger],
+    transcript: Optional[str] = None,
 ) -> JudgeVerdict:
-    """Simple majority-vote fallback when Groq is unavailable."""
+    """Simple fallback when Groq is unavailable. Now smarter for file uploads."""
     if not fast_path_history:
+        # If we have a transcript but no fast-path, we still want a valid verdict
+        if transcript and len(transcript.strip()) > 5:
+            return JudgeVerdict(
+                final_emotion=Emotion.NEUTRAL,
+                confidence=0.70, # Default confidence for text-only fallback
+                reasoning="Rule-based fallback: analyzed transcript text only (acoustic signals unavailable).",
+                fast_path_summary="No acoustic windows available for this session."
+            )
         return JudgeVerdict(
             final_emotion=Emotion.UNKNOWN,
             confidence=0.0,
@@ -275,10 +308,18 @@ async def judge_emotion(
     session_id: str,
     transcript: str,
     fast_path_history: List[FastPathTrigger],
+    *,
+    rms_energy: Optional[float] = None,
+    energy_level: Optional[str] = None,
+    speaking_rate: Optional[float] = None,
 ) -> JudgeVerdict:
     """
     Call Groq Llama 3.3 70B to produce a final emotion verdict.
     Falls back to rule-based verdict on API failure.
+
+    Optional kwargs (rms_energy, energy_level, speaking_rate) are forwarded
+    into the judge prompt to give the LLM richer acoustic context — used
+    primarily by the file upload endpoint.
     """
     cfg = get_settings()
 
@@ -288,12 +329,18 @@ async def judge_emotion(
 
     if not transcript.strip():
         logger.info("Empty transcript, using rule-based fallback.")
-        return _rule_based_fallback(session_id, fast_path_history)
+        return _rule_based_fallback(session_id, fast_path_history, transcript)
 
     if not _rate_limiter.consume(1):
-        return _rule_based_fallback(session_id, fast_path_history)
+        return _rule_based_fallback(session_id, fast_path_history, transcript)
 
-    user_prompt = _build_judge_prompt(transcript, fast_path_history)
+    user_prompt = _build_judge_prompt(
+        transcript,
+        fast_path_history,
+        rms_energy=rms_energy,
+        energy_level=energy_level,
+        speaking_rate=speaking_rate,
+    )
 
     payload = {
         "model": "llama-3.3-70b-versatile",
@@ -366,4 +413,4 @@ async def judge_emotion(
             break
 
     logger.info("Falling back to rule-based judge for session %s.", session_id)
-    return _rule_based_fallback(session_id, fast_path_history)
+    return _rule_based_fallback(session_id, fast_path_history, transcript)

@@ -326,7 +326,9 @@ async def run_hf_fallback(audio: np.ndarray, sample_rate: int = 16_000) -> Optio
         logger.debug("No HF_API_TOKEN configured, skipping HF fallback.")
         return None
 
-    url     = f"https://api-inference.huggingface.co/models/{cfg.HF_EMOTION_MODEL}"
+    # Fallback model path (hardcoded since HF_EMOTION_MODEL removed from env)
+    model_id = "ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition"
+    url = f"https://api-inference.huggingface.co/models/{model_id}"
     headers = {"Authorization": f"Bearer {cfg.HF_API_TOKEN}"}
 
     buf = io.BytesIO()

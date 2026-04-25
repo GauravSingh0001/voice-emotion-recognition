@@ -13,7 +13,7 @@
 
 param(
     [Parameter(Position=0)]
-    [ValidateSet("run","dev","mock","dashboard","install","schema","clean","models")]
+    [ValidateSet("run","dev","dashboard","install","schema","clean","models")] # , "mock"
     [string]$Target = "run"
 )
 
@@ -39,11 +39,11 @@ switch ($Target) {
         python -m uvicorn services.orchestrator.main:app --host 0.0.0.0 --port $Port --reload --log-level debug
     }
 
-    "mock" {
-        Write-Host "Starting in MOCK mode (no internet required)..." -ForegroundColor Magenta
-        $env:MOCK_APIS = "true"
-        python -m uvicorn services.orchestrator.main:app --host 0.0.0.0 --port $Port --log-level info
-    }
+    # "mock" {
+    #     Write-Host "Starting in MOCK mode (no internet required)..." -ForegroundColor Magenta
+    #     $env:MOCK_APIS = "true"
+    #     python -m uvicorn services.orchestrator.main:app --host 0.0.0.0 --port $Port --log-level info
+    # }
 
     "dashboard" {
         Write-Host "Opening TUI dashboard..." -ForegroundColor Cyan

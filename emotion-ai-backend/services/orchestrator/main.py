@@ -50,11 +50,13 @@ from shared.schemas import (
     VADState,
     VADStateChange,
 )
-from services.orchestrator.groq_client import (
-    judge_emotion,
-    transcribe_utterance,
-    get_rate_limiter,
-)
+# Disconnected Groq for now (kept for future edits)
+# from services.orchestrator.groq_client import (
+#     judge_emotion,
+#     transcribe_utterance,
+#     get_rate_limiter,
+# )
+from services.orchestrator.gemini_client import gemini_analyze_audio
 from services.orchestrator.supabase_client import (
     get_session_history,
     store_emotion_result,
@@ -198,12 +200,15 @@ async def _slow_path_worker():
                 session_id[:8], utterance.audio_duration_ms,
             )
 
-            # 5A: Transcription
-            transcript = await transcribe_utterance(utterance)
-
-            # 5B: Judge
+            # 5A & 5B: Unified Gemini Analysis
             fast_path_history = ctx.fast_path_history.copy() if ctx else []
-            verdict = await judge_emotion(session_id, transcript.text, fast_path_history)
+            from services.orchestrator.gemini_client import gemini_analyze_audio
+            transcript, verdict = await gemini_analyze_audio(
+                utterance=utterance,
+                rms_energy=None,
+                energy_level=None,
+                speaking_rate=None,
+            )
 
             # 6: Store in Supabase
             user_id = ctx.user_id if ctx else None
@@ -264,13 +269,12 @@ async def health_check():
     Simple health check endpoint for deployment monitoring.
     Returns: {"status": "ok", ...Groq quota and session stats}
     """
-    rl = get_rate_limiter()
     return {
         "status": "ok",
         "active_sessions": len(_sessions),
-        "groq_requests_today": rl.requests_today,
-        "groq_daily_limit": rl.daily_limit,
-        "groq_requests_remaining": rl.requests_remaining,
+        "groq_requests_today": 0, # Groq disconnected
+        "groq_daily_limit": 14400,
+        "groq_requests_remaining": 14400,
         "mock_mode": cfg.MOCK_APIS,
     }
 
@@ -437,44 +441,17 @@ async def analyze_file(file: UploadFile = File(...)):
         window_emotions=fast_path_history,
     )
 
-    t0 = _time.perf_counter()
-    transcript = await transcribe_utterance(utterance)
-    transcription_ms = (_time.perf_counter() - t0) * 1000
-
-    # Phase 3: Anti-hallucination guard on the transcript
-    cleaned_text = transcript.text.strip().strip(".,!?;:")
-    if len(cleaned_text) <= 1:
-        logger.info(
-            "[AnalyzeFile] %s | Transcript too short/empty → '(unintelligible)'",
-            session_id[:8],
-        )
-        transcript = TranscriptionResult(
-            session_id=session_id,
-            text="(unintelligible)",
-            latency_ms=transcript.latency_ms,
-        )
-
-    logger.info(
-        "[AnalyzeFile] %s | Whisper transcript: '%s' (%.0f ms)",
-        session_id[:8], transcript.text[:80], transcription_ms,
-    )
-
-    # ── Phase 4: Acoustic-enriched judge ──────────────────────────────────────
+    # ── Phase 3 & 4: Unified Gemini Acoustic-Enriched Judge ───────────────────
     # Compute acoustic metadata for the judge
     energy_level = "low" if rms < 0.01 else ("medium" if rms < 0.05 else "high")
-    word_count = len(transcript.text.split())
-    speaking_rate = (
-        round(word_count / (speech_duration_ms / 1000), 1)
-        if speech_duration_ms > 0 else 0.0
-    )
-
-    verdict = await judge_emotion(
-        session_id,
-        transcript.text,
-        fast_path_history,
+    
+    # We don't have transcript yet to count words, so we skip speaking_rate for now
+    
+    transcript, verdict = await gemini_analyze_audio(
+        utterance=utterance,
         rms_energy=rms,
         energy_level=energy_level,
-        speaking_rate=speaking_rate,
+        speaking_rate=None,
     )
 
     # ── Phase 5: Store in Supabase ────────────────────────────────────────────
@@ -519,7 +496,7 @@ async def analyze_file(file: UploadFile = File(...)):
             for fp in fast_path_history
         ],
         "supabase_row": row_id,
-        "transcription_latency_ms": round(transcription_ms),
+        "transcription_latency_ms": round(transcript.latency_ms),
     }
 
 

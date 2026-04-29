@@ -42,6 +42,9 @@ class Settings:
     # ── Imentiv AI ────────────────────────────────────────────────────────────
     IMENTIV_API_KEY: str = os.getenv("IMENTIV_API_KEY", "")
 
+    # ── Gemini ────────────────────────────────────────────────────────────────
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+
     # ── Application ───────────────────────────────────────────────────────────
     ORCHESTRATOR_PORT: int = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
     MOCK_APIS: bool = False # os.getenv("MOCK_APIS", "false").lower() == "true"

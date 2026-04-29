@@ -52,7 +52,7 @@ switch ($Target) {
         }
 
         Write-Host "Installing Backend Dependencies..." -ForegroundColor Gray
-        & "$VenvPath\Scripts\pip" install -r emotion-ai-backend\requirements.txt
+        & "$PythonPath" -m pip install -r emotion-ai-backend\requirements.txt
         
         Write-Host "Downloading AI Models..." -ForegroundColor Gray
         cd emotion-ai-backend
@@ -64,7 +64,7 @@ switch ($Target) {
 
     "install" {
         Write-Host "--- Installing Dependencies ---" -ForegroundColor Cyan
-        & "$VenvPath\Scripts\pip" install -r emotion-ai-backend\requirements.txt
+        & "$PythonPath" -m pip install -r emotion-ai-backend\requirements.txt
     }
 
     "backend" {
@@ -78,7 +78,7 @@ switch ($Target) {
     "dev" {
         Write-Host "--- Launching Aura Development Environment ---" -ForegroundColor Yellow
         
-        $BackendCmd = "cd emotion-ai-backend; if (Test-Path '..\.venv\Scripts\activate') { ..\.venv\Scripts\activate }; .\run.ps1 dev"
+        $BackendCmd = "cd emotion-ai-backend; if (Test-Path '..\.venv\Scripts\activate.ps1') { . ..\.venv\Scripts\activate.ps1 }; .\run.ps1 dev"
         $FrontendCmd = "cd aura-frontend; if (Test-Path 'scripts\inject-env.js') { node scripts\inject-env.js }; npx -y serve . -p 3000"
 
         Start-Process powershell -ArgumentList "-NoExit", "-Command", $BackendCmd

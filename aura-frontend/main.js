@@ -372,14 +372,17 @@ function togglePause() {
  */
 async function cancelSession() {
   _isPaused = false;
+  window._isCancelled = true;
   hideRing(true);
   showListening(false);
   clearCards();
   setConn('off');
   if (window.ParticleAura) { window.ParticleAura.setEmotion('Neutral'); window.ParticleAura.setVolume(0); }
-  if (typeof window.disconnectFromLiveKit === 'function') {
-    try { await window.disconnectFromLiveKit(); } catch (_) {}
+  
+  if (window._auraMediaRecorder && window._auraMediaRecorder.state !== 'inactive') {
+    window._auraMediaRecorder.stop();
   }
+  
   showToast('Session cancelled', 1800);
   setTimeout(() => {
     // Return to hero — reload clears all timers and state cleanly
@@ -453,7 +456,11 @@ function feedVolume(avg) {
       S.awaitVerdict = true;
       _hasSpokenThisUtterance = false;
       if (silenceBar) silenceBar.style.width = '0%';
-      showRing();
+      
+      // NEW LOGIC: Stop the recorder to trigger file upload
+      if (window._auraMediaRecorder && window._auraMediaRecorder.state !== 'inactive') {
+        window._auraMediaRecorder.stop();
+      }
       
       clearTimeout(_ringTimeoutTimer);
       _ringTimeoutTimer = setTimeout(() => {
@@ -478,18 +485,9 @@ function handleDoneClick() {
   console.log('[main.js] Manual done clicked.');
   S.awaitVerdict = true;
   _hasSpokenThisUtterance = false;
-  showRing();
   
-  if (currentSessionId) {
-    fetch(`${BACKEND_URL}/session/end`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: currentSessionId })
-    })
-      .then(res => {
-        if (!res.ok) console.warn('[Aura:Backend] session/end returned', res.status);
-      })
-      .catch(e => console.warn('Finalize endpoint failed (fallback active):', e));
+  if (window._auraMediaRecorder && window._auraMediaRecorder.state !== 'inactive') {
+    window._auraMediaRecorder.stop();
   }
   
   setTimeout(() => { if (btn) btn.disabled = false; }, 3000);
@@ -751,8 +749,12 @@ function processVerdict(row, sessionId) {
   if (!isSarcastic(verdict.final_emotion)) _commitEmotion(verdict.final_emotion);
   S.awaitVerdict = false;
   hideRing(false);
-  showListening(false);
   showCard(verdict);
+  
+  // Start recording the next utterance automatically
+  if (typeof window._auraStartRecording === 'function') {
+    setTimeout(window._auraStartRecording, 500);
+  }
 }
 
 // ── Audio Capture via LiveKit ─────────────────────────────────────────────────
@@ -769,60 +771,106 @@ async function startAudioCapture() {
     return;
   }
 
-  console.log(`[Aura:Backend] startAudioCapture() called. Fetching: ${BACKEND_URL}/session/start`);
-  try {
-    setConn('CONNECTING');
-    const response = await fetch(`${BACKEND_URL}/session/start`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({}),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-    console.log('[Aura:Backend] Session started:', data.session_id, '| LiveKit URL:', data.livekit_url);
-    if (!data.livekit_url) {
-      throw new Error('livekit_url missing in response');
-    }
-
-    currentSessionId = data.session_id;
-    window._isBackendOffline = false;
-
-    // Subscribe to Supabase Realtime BEFORE connecting mic so we don't miss verdicts
-    subscribeToVerdicts(currentSessionId);
-
-    if (typeof window.connectToLiveKit === 'function') {
-      // Reuse stream obtained during the mic-test step
-      const ok = await window.connectToLiveKit(data.livekit_token, data.livekit_url, window._auraMicStream || null);
-      if (!ok) {
-        showToast('⚠️ Microphone connection failed — check permissions and refresh', 7000);
-        setConn('ERROR');
-      } else {
-        setConn('CONNECTED');
-      }
-    } else {
-      console.error('[Aura:LiveKit] window.connectToLiveKit is not defined.');
-    }
-
-    showListening(true);
-    S.awaitVerdict = false;
-    S.slowSession  = currentSessionId;
-
-  } catch (err) {
-    console.error('[Aura:Backend] Backend unavailable:', err.message);
-    window._isBackendOffline = true;
+  if (!window._auraMicStream) {
+    showToast('⚠️ Microphone connection missing.', 5000);
     setConn('ERROR');
-    
-    let reason = 'Backend offline';
-    if (err.message.includes('HTTP')) reason = 'Backend endpoint error';
-    if (err.message.includes('livekit_url')) reason = 'Backend misconfigured (No LiveKit URL)';
-    
-    showToast(`⚠️ ${reason} - Entering Demo Mode`, 5000);
-    setTimeout(startMockSequence, 2000);
+    return;
   }
+
+  window._isBackendOffline = false;
+  setConn('CONNECTED');
+  showListening(true);
+  S.awaitVerdict = false;
+  S.slowSession = 'local_record';
+
+  window._auraStartRecording();
 }
 
-// Expose for bootstrap module trigger and livekit.js retry
+window._auraStartRecording = function() {
+  if (window._auraMediaRecorder && window._auraMediaRecorder.state !== 'inactive') return;
+  
+  let chunks = [];
+  const options = { mimeType: 'audio/webm' };
+  let mediaRecorder;
+  
+  try {
+    mediaRecorder = new MediaRecorder(window._auraMicStream, options);
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(window._auraMicStream);
+  }
+  
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  mediaRecorder.onstop = async () => {
+    if (chunks.length > 0 && !window._isCancelled) {
+      const webmBlob = new Blob(chunks, { type: mediaRecorder.mimeType });
+      
+      try {
+        // Convert WebM to WAV in-browser to support backends without ffmpeg
+        const arrayBuffer = await webmBlob.arrayBuffer();
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        
+        const wavBlob = audioBufferToWav(audioBuffer);
+        const file = new File([wavBlob], "recording.wav", { type: 'audio/wav' });
+        window._auraHandleFileUpload(file);
+      } catch (err) {
+        console.error("Failed to decode and convert audio to WAV:", err);
+        window._aura.showToast('⚠️ Audio conversion failed', 3000);
+      }
+    }
+    chunks = [];
+  };
+  mediaRecorder.start();
+  window._auraMediaRecorder = mediaRecorder;
+  window._isCancelled = false;
+};
+
+// Helper: Convert AudioBuffer to WAV Blob
+function audioBufferToWav(buffer) {
+  const numOfChan = buffer.numberOfChannels;
+  const length = buffer.length * numOfChan * 2 + 44;
+  const out = new ArrayBuffer(length);
+  const view = new DataView(out);
+  const channels = [];
+  let offset = 0;
+  let pos = 0;
+
+  function setUint16(data) { view.setUint16(pos, data, true); pos += 2; }
+  function setUint32(data) { view.setUint32(pos, data, true); pos += 4; }
+
+  setUint32(0x46464952); // "RIFF"
+  setUint32(length - 8); // file length - 8
+  setUint32(0x45564157); // "WAVE"
+
+  setUint32(0x20746d66); // "fmt " chunk
+  setUint32(16); // length = 16
+  setUint16(1); // PCM (uncompressed)
+  setUint16(numOfChan);
+  setUint32(buffer.sampleRate);
+  setUint32(buffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
+  setUint16(numOfChan * 2); // block-align
+  setUint16(16); // 16-bit
+
+  setUint32(0x61746164); // "data" - chunk
+  setUint32(length - pos - 4); // chunk length
+
+  for (let i = 0; i < buffer.numberOfChannels; i++) {
+    channels.push(buffer.getChannelData(i));
+  }
+
+  while (offset < buffer.length) {
+    for (let i = 0; i < numOfChan; i++) {
+      let sample = Math.max(-1, Math.min(1, channels[i][offset]));
+      sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+      view.setInt16(pos, sample, true);
+      pos += 2;
+    }
+    offset++;
+  }
+  return new Blob([out], { type: 'audio/wav' });
+}
+
+// Expose for bootstrap module trigger
 window._auraRetryAudioCapture = startAudioCapture;
 window._auraStartCapture      = startAudioCapture;
 
@@ -872,7 +920,7 @@ async function startReplaySession(sessionId) {
 // ── File Upload ───────────────────────────────────────────────────────────────
 
 const MAX_FILE_SIZE_MB = 10;
-const ALLOWED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'ogg', 'flac'];
+const ALLOWED_EXTENSIONS = ['wav', 'mp3', 'm4a', 'ogg', 'flac', 'webm'];
 
 async function handleFileUpload(file) {
   // Validate file size

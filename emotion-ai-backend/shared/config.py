@@ -39,6 +39,9 @@ class Settings:
     # ── Hugging Face (fallback) ───────────────────────────────────────────────
     HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 
+    # ── Imentiv AI ────────────────────────────────────────────────────────────
+    IMENTIV_API_KEY: str = os.getenv("IMENTIV_API_KEY", "")
+
     # ── Application ───────────────────────────────────────────────────────────
     ORCHESTRATOR_PORT: int = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
     MOCK_APIS: bool = False # os.getenv("MOCK_APIS", "false").lower() == "true"

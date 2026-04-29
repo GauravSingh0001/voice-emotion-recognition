@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -352,6 +352,13 @@ async def analyze_file(file: UploadFile = File(...)):
         audio_16k = audio_f32
 
     # ── Phase 2: VAD — detect speech segments ─────────────────────────────────
+    try:
+        from services.signal_processor.vad_engine import _get_silero
+        model, _ = _get_silero()
+        model_loaded = model is not None
+    except Exception as e:
+        model_loaded = str(e)
+        
     speech_segments = _vad_detect_speech(audio_16k, TARGET_SAMPLE_RATE, session_id)
     logger.info(
         "[AnalyzeFile] %s | VAD found %d speech segment(s)",
@@ -365,7 +372,7 @@ async def analyze_file(file: UploadFile = File(...)):
         )
         raise HTTPException(
             status_code=400,
-            detail="No speech detected in the audio file.",
+            detail=f"No speech detected in the audio file. (Silero loaded: {model_loaded})",
         )
 
     # ── Phase 2: Run SenseVoice ONNX on 500ms windows → FastPathTriggers ─────
@@ -834,6 +841,42 @@ async def session_report(session_id: str):
         "dominantEmotion": record.get("dominant_emotion", final_emotion),
         "variability": record.get("variability", "Moderate"),
     }
+
+
+@app.post("/session/live-interaction", tags=["Session"])
+async def live_interaction(request: Request):
+    """
+    Route live interaction tasks to Imentiv AI API.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    if not cfg.IMENTIV_API_KEY:
+        raise HTTPException(status_code=500, detail="IMENTIV_API_KEY not configured.")
+        
+    import httpx
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Placeholder for the actual Imentiv AI processing endpoint
+            target_url = "https://api.imentiv.ai/v1/process" 
+            headers = {
+                "Authorization": f"Bearer {cfg.IMENTIV_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            # Forward the live interaction payload to Imentiv AI
+            response = await client.post(target_url, json=body, headers=headers, timeout=30.0)
+            
+            return {
+                "status": "success",
+                "imentiv_response": response.json() if response.status_code < 300 else response.text,
+                "status_code": response.status_code
+            }
+        except Exception as e:
+            logger.error("Error calling Imentiv AI API: %s", e)
+            raise HTTPException(status_code=502, detail=f"Failed to communicate with Imentiv AI: {str(e)}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

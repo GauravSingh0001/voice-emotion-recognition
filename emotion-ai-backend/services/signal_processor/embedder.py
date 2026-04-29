@@ -224,42 +224,124 @@ def _preprocess_audio(audio: np.ndarray, sample_rate: int = 16_000) -> Tuple[np.
 
 # ── CTC greedy decode → emotion ───────────────────────────────────────────────
 
+# SenseVoice encodes metadata as a prefix before speech content:
+#   Frame 0: Language tag (e.g., <|en|> = token 24885)
+#   Frame 1: Emotion token (greedy argmax — the model's primary classification)
+#   Frame 2: Event/noise tag (e.g., <|nospeech|>)
+#   Frame 3+: Speech CTC content (blanks, subwords, …)
+#
+# Strategy:
+#   Stage 1 — If frame 1's greedy token is a SPECIFIC emotion (not UNKNOWN/NEUTRAL),
+#             return that directly with high confidence.
+#   Stage 2 — If the prefix is ambiguous (EMO_UNKNOWN / NEUTRAL), scan speech-content
+#             frames (frame 3+) for consistent emotion advantage over NEUTRAL.
+#   Stage 3 — Logit scoring on prefix frames as final fallback.
+
+_NEUTRAL_TOKEN   = 25004  # <|NEUTRAL|>
+_UNKNOWN_TOKEN   = 25009  # <|EMO_UNKNOWN|>
+_AMBIGUOUS_TOKENS = {_NEUTRAL_TOKEN, _UNKNOWN_TOKEN}
+
+
 def _ctc_emotion_probs(logits: np.ndarray) -> List[float]:
     """
-    CTC-greedy-decode the logits and sum log-probs for each emotion token.
-    Returns 5-class probability list [Neutral, Happy, Sad, Angry, Surprised].
+    Two-stage SenseVoice emotion decode.
 
+    Stage 1: Greedy prefix — frame 1 (the SenseVoice emotion slot) may directly
+    output a specific emotion token.  Trust it when it's not NEUTRAL/EMO_UNKNOWN.
+
+    Stage 2: If the prefix is ambiguous, measure each emotion's logit advantage
+    over NEUTRAL across speech-content frames (frame 3 onwards).  A consistent
+    positive advantage across multiple frames indicates real emotion.
+
+    Returns 5-class probability list [Neutral, Happy, Sad, Angry, Surprised].
     logits: (1, T', 25055) float32
     """
     logits = logits[0]  # (T', 25055)
+    T = logits.shape[0]
 
-    # Softmax over vocab dim
-    logits_shifted = logits - logits.max(axis=-1, keepdims=True)
-    exp_l = np.exp(logits_shifted)
-    probs_frame = exp_l / exp_l.sum(axis=-1, keepdims=True)  # (T', 25055)
+    # ── Stage 1: Greedy prefix decode ─────────────────────────────────────────
+    # SenseVoice places the emotion token at frame index 1 (after language tag)
+    prefix_frames = min(4, T)
+    greedy_tokens = [int(np.argmax(logits[i])) for i in range(prefix_frames)]
+    logger.debug("SenseVoice greedy prefix tokens: %s", greedy_tokens)
 
-    # Accumulate probability mass for each emotion token over all frames
-    emo_scores = {emo_id: 0.0 for emo_id in _EMO_TOKEN_IDS}
-    for frame_probs in probs_frame:
+    # Check frame 1 first (primary emotion slot), then frames 0, 2, 3
+    check_order = [1, 0, 2, 3]
+    for fidx in check_order:
+        if fidx >= prefix_frames:
+            continue
+        tok = greedy_tokens[fidx]
+        if tok in _EMO_TOKEN_IDS and tok not in _AMBIGUOUS_TOKENS:
+            emotion = _EMO_TOKEN_IDS[tok]
+            emo_idx = _EMOTION_TO_IDX.get(emotion, 0)
+            probs = [0.02] * 5
+            probs[emo_idx] = 0.92
+            logger.debug(
+                "Stage-1 prefix match: frame=%d token=%d → %s",
+                fidx, tok, emotion,
+            )
+            return probs
+
+    # ── Stage 2: Emotion advantage in speech-content frames ───────────────────
+    # For frames 3+, measure the PEAK logit advantage each emotion token has
+    # over NEUTRAL.  RAVDESS shows emotion in specific frames (sparse), so we
+    # use peak (max) rather than mean advantage to detect those bursts.
+    if T > 4:
+        content_logits = logits[3:]  # (T-3, 25055)
+        neutral_col = content_logits[:, _NEUTRAL_TOKEN]  # (T-3,)
+
+        # For each non-neutral, non-unknown emotion token, compute peak advantage
+        peak_advantages: dict[int, float] = {}
         for emo_id in _EMO_TOKEN_IDS:
-            if emo_id < len(frame_probs):
-                emo_scores[emo_id] += float(frame_probs[emo_id])
+            if emo_id in _AMBIGUOUS_TOKENS:
+                continue
+            emo_col = content_logits[:, emo_id]
+            peak_adv = float((emo_col - neutral_col).max())
+            peak_advantages[emo_id] = peak_adv
+            logger.debug("Stage-2 peak_adv | token=%d (%s): %.4f", emo_id, _EMO_TOKEN_IDS[emo_id], peak_adv)
 
-    # Pool into 5-class output
-    class_scores = [0.0] * 5
+        # Find the emotion with the highest peak advantage
+        best_id = max(peak_advantages, key=peak_advantages.get)
+        best_peak = peak_advantages[best_id]
+
+        # Threshold: >2.0 means the model briefly but clearly activates the emotion
+        # (ANGRY file shows +4.62, neutral/sad file shows max +1.07)
+        if best_peak > 2.0:
+            emotion = _EMO_TOKEN_IDS[best_id]
+            emo_idx = _EMOTION_TO_IDX.get(emotion, 0)
+            # Scale confidence with peak strength (capped at 0.90)
+            confidence = min(0.90, 0.60 + best_peak * 0.04)
+            probs = [(1 - confidence) / 4] * 5
+            probs[emo_idx] = confidence
+            logger.debug(
+                "Stage-2 content match: token=%d (%s) peak_adv=%.4f conf=%.2f",
+                best_id, emotion, best_peak, confidence,
+            )
+            return probs
+
+    # ── Stage 3: Logit scoring on prefix frames (final fallback) ──────────────
+    logger.debug("Stage-3 fallback: logit scoring on prefix frames.")
+    prefix_logits = logits[:prefix_frames]
+    shifted = prefix_logits - prefix_logits.max(axis=-1, keepdims=True)
+    log_probs = shifted - np.log(np.exp(shifted).sum(axis=-1, keepdims=True))
+
+    class_log_scores = np.full(5, -1e9, dtype=np.float64)
     for emo_id, emotion in _EMO_TOKEN_IDS.items():
-        idx = _EMOTION_TO_IDX.get(emotion, 0)
-        class_scores[idx] += emo_scores[emo_id]
+        if emo_id < log_probs.shape[1]:
+            peak = float(log_probs[:, emo_id].max())
+            idx = _EMOTION_TO_IDX.get(emotion, 0)
+            if peak > class_log_scores[idx]:
+                class_log_scores[idx] = peak
 
-    total = sum(class_scores) or 1.0
-    probs = [s / total for s in class_scores]
-
-    # Smooth towards Neutral if all scores are near-zero (silence / noise)
-    if max(probs) < 0.25:
-        probs[0] = max(probs[0], 0.5)
-        total2 = sum(probs)
-        probs = [p / total2 for p in probs]
-
+    temp = 0.5
+    scaled = class_log_scores / temp
+    scaled -= scaled.max()
+    exp_scores = np.exp(scaled)
+    probs = (exp_scores / exp_scores.sum()).tolist()
+    logger.debug(
+        "Stage-3 scores | neutral=%.3f happy=%.3f sad=%.3f angry=%.3f surp=%.3f",
+        probs[0], probs[1], probs[2], probs[3], probs[4],
+    )
     return probs
 
 

@@ -207,28 +207,44 @@ async def transcribe_utterance(utterance: UtteranceComplete) -> TranscriptionRes
 # ── Judge (Groq Llama) ────────────────────────────────────────────────────────
 
 _JUDGE_SYSTEM_PROMPT = """You are an expert emotion analyst. Your task is to determine
-the final emotional state from speech, resolving any mismatch between acoustic signals
-and spoken content.
+the final emotional state from speech, synthesizing multiple signals.
 
 You will receive:
 1. A transcription of spoken words
 2. A history of acoustic emotion detections (fast-path, every 500ms)
-3. (Optional) Acoustic metadata: RMS energy level and speaking rate
+3. Acoustic metadata: RMS energy level and speaking rate
+
+IMPORTANT — The acoustic fast-path uses a local speech model that has a strong
+bias towards "Neutral" and frequently under-detects active emotions. Do NOT
+treat a consistent "Neutral" fast-path as definitive evidence of neutrality.
+Instead, use the full picture:
+
+Signal weighting:
+- **RMS energy**: HIGH energy (>0.05 RMS) combined with "Neutral" acoustic
+  signals strongly suggests the acoustic model FAILED to detect the real emotion.
+  Treat high-energy speech as a signal that an active emotion may be present.
+- **Transcript tone/content**: Exclamatory sentences ("!"), demanding phrasing,
+  emotionally loaded words are strong signals on their own.
+- **Acoustic timeline**: Use as supporting evidence, not as the sole decider.
+  If acoustic signals are CONSISTENTLY non-neutral, they carry strong weight.
+  If they are all "Neutral" but energy and transcript suggest otherwise, the
+  acoustic model likely missed it.
 
 Critical rules:
-- If the transcript is very short (≤2 words) and acoustic energy is extremely low,
-  treat the utterance as unintelligible and assign Neutral with low confidence (≤0.4).
-- If the transcript appears to be a Whisper hallucination (e.g. "Thank you", "Subscribe",
-  "Thanks for watching") and the acoustic fast-path shows Neutral with high confidence,
-  disregard the transcript and rely on acoustic signals only.
-- Always weigh the acoustic emotion timeline more heavily than transcript sentiment
-  when the two conflict.
+- If the transcript is very short (≤2 words) and acoustic energy is extremely low
+  (RMS < 0.005), treat as unintelligible and assign Neutral with low confidence (≤0.4).
+- If the transcript appears to be a Whisper hallucination (e.g. "Thank you",
+  "Subscribe", "Thanks for watching") AND energy is LOW, rely on acoustic signals only.
+- For HIGH energy speech (RMS > 0.05) with neutral acoustic fast-path, prioritize
+  transcript tone. The acoustic model is likely wrong.
+
+Valid emotions: Neutral, Happy, Sad, Angry, Surprised, Sarcastic, Frustrated
 
 Respond ONLY with a valid JSON object with exactly these keys:
 {
-  "final_emotion": "<one of: Neutral, Happy, Sad, Angry, Surprised, Sarcastic, Frustrated>",
+  "final_emotion": "<one of the valid emotions above>",
   "confidence": <float between 0.0 and 1.0>,
-  "reasoning": "<brief explanation of your decision>",
+  "reasoning": "<brief explanation referencing which signals led to your decision>",
   "fast_path_summary": "<summary of acoustic signal pattern>"
 }
 

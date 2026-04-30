@@ -23,10 +23,11 @@ Signal Processor (Separate Python Process)
 Orchestrator (FastAPI + asyncio)
   ├── Fast-Path → publish to Supabase Realtime
   └── Slow-Path (utterance end)
-        ├── Groq Whisper → transcript (~200ms)
-        └── Groq Llama 3.3 70B → emotion judge (~500ms)
-              │
-              ▼
+        └── Google Gemini 3.1 Pro (Multimodal)
+              ├── Accurate Transcription
+              └── Emotional Judging (~800ms)
+                    │
+                    ▼
           Supabase (Free PostgreSQL + Realtime)
               │
               ▼
@@ -50,7 +51,7 @@ pip install -r requirements.txt
 | Service | URL | Free Tier |
 |---------|-----|-----------|
 | **LiveKit Cloud** | https://livekit.io/cloud | 50 concurrent-minutes/month |
-| **Groq Cloud** | https://console.groq.com | 14,400 requests/day |
+| **Google Gemini** | https://aistudio.google.com/ | Free (limited rate) |
 | **Supabase** | https://app.supabase.com | 500MB DB, unlimited auth |
 | **Hugging Face** | https://huggingface.co/settings/tokens | Free inference API (fallback) |
 
@@ -58,7 +59,7 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in your API keys
+# Edit .env and fill in your API keys (GEMINI_API_KEY)
 ```
 
 ### 4. Set Up Supabase Database
@@ -118,7 +119,7 @@ emotion-ai-backend/
 │   │   └── requirements.txt
 │   ├── orchestrator/
 │   │   ├── main.py               # Module 3: FastAPI coordination hub
-│   │   ├── groq_client.py        # Module 5: Whisper + Llama wrappers
+│   │   ├── gemini_client.py      # Module 5: Multimodal Gemini integration
 │   │   ├── supabase_client.py    # Module 6: DB + Realtime
 │   │   └── requirements.txt
 │   └── dashboard/
@@ -192,7 +193,7 @@ The fast-path model outputs 5 classes every 500ms:
 | Service | Limit | Handling in Code |
 |---------|-------|-----------------|
 | LiveKit | 50 min/month | Monthly counter in `.livekit_usage.json`, graceful offline fallback |
-| Groq | 14,400 req/day | Token bucket counter, warn at 80%, retry on 429, rule-based fallback |
+| Gemini | Free Tier | Unified call for transcript + judge to save tokens/rate-limits |
 | Supabase | 500MB DB | Deduplication: skip write if same emotion 3× in a row |
 | HuggingFace | ~50k req/day | Used only as fast-path fallback, 500ms timeout |
 
@@ -202,7 +203,7 @@ The fast-path model outputs 5 classes every 500ms:
 
 **`ONNX model not found`** → Run `make models`
 
-**`Groq 429 Too Many Requests`** → You've hit the daily limit. Wait until midnight UTC or enable `MOCK_APIS=true`
+**`Gemini API error`** → Check `GEMINI_API_KEY` in `.env`. Ensure your key has access to the 1.5/2.0 models.
 
 **`LiveKit connection refused`** → Check `LIVEKIT_URL` in `.env`. Ensure your LiveKit project is active.
 

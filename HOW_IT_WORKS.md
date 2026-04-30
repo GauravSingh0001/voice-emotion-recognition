@@ -17,21 +17,16 @@ Imagine you are having a conversation with an incredibly perceptive listener. He
 
 ### Step 2: Quick Reactions (The Reflex)
 * **What happens:** As your audio arrives at our server, the system acts like a reflex. It chops your audio into tiny, half-second slices. 
-* **The Process:** A small, incredibly fast "local brain" looks at *how* you are speaking—the pitch, the volume, the tone—without understanding the actual words. It makes a split-second guess (e.g., "This sounds angry!").
+* **The Process:** A small, incredibly fast "local brain" looks at *how* you are speaking—the pitch, the volume, the tone—without understanding the actual words. It makes a split-second guess (e.g., "This sounds happy!").
 * **Why it matters:** This helps the system understand the acoustic emotion of your voice as it's happening, much like reading someone's body language.
 
-### Step 3: Understanding the Words (The Secretary)
+### Step 3: Deep Understanding (The Multimodal Mind)
 * **What happens:** The system is constantly listening for you to take a breath or pause. Once you stop speaking for a moment, it assumes you've finished a thought (an "utterance").
-* **Outgoing Data:** The server packages that complete audio clip and sends it to a lightning-fast transcription service (Groq Whisper).
-* **Incoming Data:** The service quickly returns the exact text of what you just said (e.g., *"Oh, great. Another flat tire."*).
+* **The Process:** The server packages that complete audio clip and sends it to **Google Gemini 3.1 Pro**.
+* **Multimodal Magic:** Unlike older systems that separate "hearing the words" from "judging the emotion," Gemini does both at once. It listens to your tone, analyzes your words, and considers the context in a single intelligent step.
+* **Result:** It returns the exact transcript (e.g., *"Oh, great. Another flat tire."*) and the final emotional verdict (e.g., **Sarcastic**) along with an explanation of its reasoning.
 
-### Step 4: The Final Judge (The Thinker)
-* **What happens:** Now the system has two pieces of the puzzle: the written words and the "reflex" guesses about your tone of voice.
-* **Outgoing Data:** The server sends both the text and the tone history to a massive, highly intelligent "supercomputer brain" (an AI called Llama). 
-* **The Process:** The Judge looks at everything contextually. If the words are *"Oh, great"*, but the tone was frustrated and angry, the Judge realizes you are being **Sarcastic**.
-* **Incoming Data:** The Judge sends back the final verdict: The emotion, a confidence score, and a brief explanation of *why* it chose that emotion.
-
-### Step 5: The Result (The Display)
+### Step 4: The Result (The Display)
 * **What happens:** The backend needs to get this final verdict back to your screen.
 * **Outgoing Data:** The server saves the final verdict securely into our cloud database (Supabase).
 * **Incoming Data (to your screen):** The database is "real-time," meaning the exact second the verdict is saved, it pushes a live notification directly to your web browser. Your screen updates instantly, showing you a beautiful "Emotion Card" with your results.
@@ -47,8 +42,7 @@ If you want to look at it strictly in terms of data moving in and out of the mai
 - (Optional) Uploaded `.wav` audio files.
 
 **2. Data Moving OUT to Cloud Services:**
-- Audio clips sent to the AI Transcriber (Groq Whisper).
-- Text and tone data sent to the AI Judge (Groq Llama).
+- Audio clips sent to **Google Gemini** (Unified Transcriber + Judge).
 - Final results saved to the Database (Supabase).
 
 **3. Data Going BACK to the User:**
